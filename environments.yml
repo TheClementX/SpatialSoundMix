@@ -1,0 +1,7 @@
+name: SpatialSoundMix 
+channels: 
+  - conda-forge
+  - defaults
+dependencies: 
+  - python=3.12
+  - cmake=3.14.0

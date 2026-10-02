@@ -1,0 +1,29 @@
+Todo: 
+	1. Create a script for aggregating and organizing data dependencies
+		-> make sure source sampling and file formats align
+	2. Create a script for aggregating HM3D scans
+	3. Create a script for robust Sound Spaces 2.0 installation
+	4. Design and implement a pipeline for binaural synthetic data creation
+		-> Focus on possibly moving microphones and or moving sound sources
+		-> look for good practice data aggregation techniques
+		-> I am sure there is a qualitative way to ensure the data is sufficient for 
+		training. Learn this and follow it to ensure high quality
+
+	5. Create models for assesing the baseline quality of this dataset
+
+Questions: 
+	-> What are the standards I have to follow in dataset curation? What good practices? 
+	-> How much data should I have? How should I determine this? 
+
+Goal: 
+	-> What do I need : I need a robust class that can generate a large amount of varied 
+	data instances with different sources and different meshes. Changing scene requires
+	a large overhead and changing audio source requires a certain amount of overhead. 
+	We would want to keep our certain configuration for as long as possible before changing 
+	sources. In otherwords we would to keep sounds for as long as possible and rooms for as long as 
+	possible. 
+
+API-keys
+	token-secret : e0d4dbfcc297bad4de7611be699d8a5b
+	token-id : dce18cce81daa48b
+
