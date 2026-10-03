@@ -44,17 +44,61 @@ from scipy.signal import fftconvolve
 import random
 
 """
-AudioQueue
+AudioCue
 
-@brief: Used in a list to queue audio objects for playing
+@brief: Used in a list to queue audio objects for playing. 
+an AudioCue stores its audio and some metadata. an AudioCue
+stores its start step which is used for sequencing in and AudioSequence.
 """
-class AudioQueue: 
+class AudioCue: 
     def __init__(
+        self,
         raw_audio_path: str, 
+        sensor_name: str, 
         sample_rate: float = 44100.0
     ) -> None: 
         self.path = raw_audio_path
-        self.audio = 
+        self.audio, self.sample_rate = sf.read(raw_audio_path)
+        self.sensor_name = sensor_name
+        self.num_samples = len(self.audio)
+
+    def set_cue_start_step(self, start_step int): 
+        self.start_step = start_step
+
+"""
+AudioSequence
+
+@breif: The main class for managing samples and the timing 
+of audio playing. This is an indexable object which can 
+be used to return the audio to be convolved with a RIR
+at simulation step i. 
+"""
+class AudioSequence: 
+    def __init__(
+        self,
+        cues: list[AudioCue], 
+        max_samples: int, 
+        samples_per_step: int, 
+    ) -> None: 
+        self.cues = cues
+        self.max_samples = max_samples
+        self.samples_per_step = samples_per_step
+        self.max_steps = (max_samples // samples_per_step) + 1
+
+    """
+    @brief: return the samples for the current time step for each 
+    active audio source. 
+    """
+    def __getitem__(self, time: int) -> list[tuple[str, np.ndarray]]:
+        result = []
+        for i, q in enumerate(self.cues): 
+            if time <= q.start_step: 
+                start = (time - q.start_step) * samples_per_step
+                end = start + self.samples_per_step
+                cur_audio = q.audio[start:end]
+                result.append((f"audio_source_{i}", cur_audio))
+
+        return result
 
 """
 SimState
@@ -196,14 +240,44 @@ class SpatialSoundMixDatasetBuilder:
     """
     create_audio_queue_sequence
 
-    @brief: creates a list of AudioQueue objects for scheduling the playing 
-    of audio source on AudioSensors. The returned list will be checked at 
-    every timestep and Audio snipets will be taken directly from it. 
+    @brief: sequences audio in time randomely to make 
+    a sequence of AudioCues.
+    @return: An AudioSequence object used for get the 
+    samples for convolution at each timestep. 
     """
-    def create_audio_queue_sequence(
-        raw_audio_paths: list[str]
-    ) -> list[AudioQueue]: 
-        pass
+    def create_audio_cue_sequence(
+        self, 
+        raw_audio_paths: list[str],
+        step_duration: float = 0.2, 
+        additional_seconds: float = 5.0
+    ) -> AudioSequence: 
+        cues, source_max_samples = [], 0
+        sample_rate = None
+
+        #load AudioCues
+        for i, path in enumerate(raw_audio_paths): 
+            cues.append(AudioCue(path, f"audio_source_{i}"))
+            if i == 0: 
+                sample_rate = cues[0].sample_rate
+            if cues[i].sample_rate != sample_rate: 
+                raise ValueError("Sample rate mismatch in audiosequence")
+            source_max_samples = max(cues[i].num_samples, source_max_samples)
+
+        additional_samples = additional_seconds * sample_rate
+        samples_per_step = step_duration * sample_rate
+        sequence_samples = source_max_samples + additional_samples
+        #make sure sequence samples is multiple of sequence_steps
+        sequence_samples += samples_per_step - (sequence_samples % samples_per_step)
+        sequence_steps = sequence_samples // samples_per_step
+
+        #select audio source start times
+        #TODO: finalize start times
+        for q in cues: 
+            start = additional_samples // 2
+
+
+        sequence = AudioSequence(cues, sequence_samples,  samaples_per_step)
+        return sequence
 
     """
     create_audio_trajectories
@@ -230,7 +304,7 @@ class SpatialSoundMixDatasetBuilder:
     @return: 
     """
     def generate_stationary_data_instance(
-        audio_queues: list[AudioQueue],  
+        audio_cues: list[AudioCue],  
     ) -> dict: 
         pass
 
