@@ -40,7 +40,7 @@ import os
 import habitat_sim
 import numpy as np
 import soundfile as sf
-from scipy.signal import fftconvolve
+import scipy.signal as ss 
 import random
 
 """
@@ -72,6 +72,8 @@ AudioSequence
 of audio playing. This is an indexable object which can 
 be used to return the audio to be convolved with a RIR
 at simulation step i. 
+
+#TODO: add a way to count sources
 """
 class AudioSequence: 
     def __init__(
@@ -99,6 +101,10 @@ class AudioSequence:
                 result.append((f"audio_source_{i}", cur_audio))
 
         return result
+
+    def __len__(self): 
+        return self.max_steps
+
 
 """
 SimState
@@ -186,19 +192,18 @@ class SpatialSoundMixDatasetBuilder:
         pass 
 
     """
+    initialize_sim_scene
+
     @brief: Initializes the habitat-sim simulation state with a scene and 
     number of sources
-
-    TODO: change audio_source_idxes -> number_of_sources. Audio sources will be 
-    independent from habitat-sim context. 
     """
     def initialize_sim_scene(
-        audio_source_idxes: list[int]
+        num_sources: int, 
         mesh_idx: int
     ) -> habitat_sim.simulator.Simulator: 
         #setup Backend and scene
         backend_cfg = habitat_sim.SimulatorConfiguration()
-        backend_cfg.scene_id = sShould I set the location of audio souelf.mesh_paths[mesh_idx]
+        backend_cfg.scene_id = self.mesh_paths[mesh_idx]
         backend_cfg.enable_physics = True
         backend_cfg.random_seed = self.seed
 
@@ -209,7 +214,7 @@ class SpatialSoundMixDatasetBuilder:
 
         #setup audio sources
         sensor_specs = []
-        for i, idx in enumerate(audio_source_idxes): 
+        for i in range(num_sources): 
             audio_spec = habitat_sim.AudioSensorSpec()
             audio_spec.uuid = f"audio_source_{i}"
             audio_spec.acousticsConfig = acoustics_cfg
@@ -249,7 +254,7 @@ class SpatialSoundMixDatasetBuilder:
         self, 
         raw_audio_paths: list[str],
         step_duration: float = 0.2, 
-        additional_seconds: float = 5.0
+        additional_seconds: float = 10.0
     ) -> AudioSequence: 
         cues, source_max_samples = [], 0
         sample_rate = None
@@ -263,20 +268,27 @@ class SpatialSoundMixDatasetBuilder:
                 raise ValueError("Sample rate mismatch in audiosequence")
             source_max_samples = max(cues[i].num_samples, source_max_samples)
 
+        #caclulate additional seconds 
         additional_samples = additional_seconds * sample_rate
+        padding = additional_samples // 2
+
         samples_per_step = step_duration * sample_rate
         sequence_samples = source_max_samples + additional_samples
+
         #make sure sequence samples is multiple of sequence_steps
         sequence_samples += samples_per_step - (sequence_samples % samples_per_step)
         sequence_steps = sequence_samples // samples_per_step
 
         #select audio source start times
-        #TODO: finalize start times
         for q in cues: 
-            start = additional_samples // 2
+            start = padding
+            end = sequence_samples - padding
 
+            sample_idx = random.randing(start, end)
+            start_step = sample_idx // sequence_samples
+            q.set_cue_start_step(start_step)
 
-        sequence = AudioSequence(cues, sequence_samples,  samaples_per_step)
+        sequence = AudioSequence(cues, sequence_samples, samples_per_step)
         return sequence
 
     """
@@ -296,6 +308,28 @@ class SpatialSoundMixDatasetBuilder:
         pass 
 
     """
+    create_activity_array
+
+    a function to compute exactly when a slice of audio is playing vs 
+    silent. Use the hilbert transform approach.  
+
+    #TODO: mathematically check the validity of this activity counting 
+    approach
+
+    @return: a binary mask where 1 corresponds to an active signal
+    source and 0 corresponds to no source. 
+    """
+    def create_activity_array(
+        signal: np.ndarray, 
+        threshold: float = 0.01
+    ) -> np.ndarray: 
+        analytic_signal = ss.hilbert(signal)
+        envelope = np.abs(analytic_signal)
+        activity_mask = (envelope > threshold).astype(int)
+
+        return activity_mask 
+
+    """
     generate_stationary_data_instace
 
     @breif: Generates one instance of simulated audio with static positioning. 
@@ -304,9 +338,21 @@ class SpatialSoundMixDatasetBuilder:
     @return: 
     """
     def generate_stationary_data_instance(
-        audio_cues: list[AudioCue],  
+        audio_sequence: AudioSequence, 
+        num_channels: int = 2
     ) -> dict: 
-        pass
+        mix_audio = np.zeros((num_channels, audio_sequence.max_samples))
+        source_counts = np.zeros((num_channels, audio_sequence.max_samples))
+
+        for i in range(len(audio_sequence)): 
+            audio_slices = audio_sequence[i]
+
+
+        return {
+            "mix_audio": mix_audio, 
+            "source_counts": source_counts
+        }
+
 
     """
     generate_dynamic_data_instances
@@ -315,7 +361,7 @@ class SpatialSoundMixDatasetBuilder:
     audio sensor paths and receiver paths. 
     """
     def generate_dynamic_data_instance(
-        audio_queues: list[AudioQueue], 
+        audio_queues: AudioSequence, 
         audio_sensor_paths: list[np.ndarray], 
         receiver_path: np.ndarray
     ) -> dict: 
