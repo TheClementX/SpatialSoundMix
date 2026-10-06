@@ -61,8 +61,9 @@ class AudioCue:
         self.audio, self.sample_rate = sf.read(raw_audio_path)
         self.sensor_name = sensor_name
         self.num_samples = len(self.audio)
+        self.sample_rate = sample_rate
 
-    def set_cue_start_step(self, start_step int): 
+    def set_cue_start_step(self, start_step int) -> None: 
         self.start_step = start_step
 
 """
@@ -95,7 +96,7 @@ class AudioSequence:
         result = []
         for i, q in enumerate(self.cues): 
             if time <= q.start_step: 
-                start = (time - q.start_step) * samples_per_step
+                start = (time - q.start_step) * self.samples_per_step
                 end = start + self.samples_per_step
                 cur_audio = q.audio[start:end]
                 result.append((f"audio_source_{i}", cur_audio))
@@ -128,13 +129,15 @@ class SpatialSoundMixDatasetBuilder:
     @brief: load all mesh and audio source paths. 
     """
     def __init__(
+        self, 
         data_dir: str, 
         mesh_dir: str, 
-        fps: int, 
+        step_duration: float, 
         sample_rate: float = 44100.0,
         seed: int = 42,
         data_type: str = "EARS"
     ) -> None: 
+
         self.data_dir = data_dir 
         self.data_paths = [
             os.path.join(self.data_dir, dir) for dir in os.listdirs(data_dir)
@@ -145,7 +148,10 @@ class SpatialSoundMixDatasetBuilder:
             os.path.join(self.mesh_dir, dir) for dir in os.listdirs(mesh_dir)
         ]
 
+        self.step_duration = step_duration
+        self.sample_rate = sample_rate
         self.seed = seed
+
 
     """
     set_random_elevation
@@ -153,6 +159,7 @@ class SpatialSoundMixDatasetBuilder:
     @brief: add elevation to a point. This simulates the height of a speaker. 
     """
     def set_random_elevation(
+        self, 
         sim: habitat_sim.simulator.Simulator, 
         point: np.ndarray, 
         default_height: float = 1.6, 
@@ -165,14 +172,14 @@ class SpatialSoundMixDatasetBuilder:
         ray_direction = np.ndarray([0.0, 1.0, 0.0])
 
         #cast array using physics engine
-        ray = habitat_sim.geo.Ray(ray_origin, ray_direction)
+        ray = habitat_sim.geo.Ray(point, ray_direction)
         hit_record = sim.cast_ray(ray)
 
         if hit_record.has_hits: 
             distance_to_ceiling = hit_record.hits[0].hit_distance
             max_height = distance_to_ceiling - ceiling_offset
         else: 
-            max_height = minimum_height
+            max_height = default_height
 
         #sample point
         random_elevation = random.uniform(min_height, max_height)
@@ -183,13 +190,24 @@ class SpatialSoundMixDatasetBuilder:
         return new_point
 
     """
-    set_random_audio_source_position
-    
-    @brief: sets the choosen AudioSensor position in the current
-    simulation to a random navigable and valid position.@brief: 
+    @brief randomly set the AudioSensors in a sim object
+    to valid locations.
     """
-    def set_random_audio_source_position(): 
-        pass 
+    def set_random_audio_source_positions(
+        self,
+        sim: habitat_sim.simulator.Simulator,
+        num_sources: int
+    ) -> None: 
+
+        agent = sim.get_agent(0)
+        for i in range(num_sources): 
+            valid_floor_pos = sim.pathfinder.get_random_navigable_point()
+            initial_pos = self.set_random_elevation(valid_floor_pos)
+            sensor = agent._sensors[f"audio_source+{i}"]
+            sensor.setAudioSourceTransform(initial_pos)
+
+        sim.step({})
+
 
     """
     initialize_sim_scene
@@ -198,6 +216,7 @@ class SpatialSoundMixDatasetBuilder:
     number of sources
     """
     def initialize_sim_scene(
+        self,
         num_sources: int, 
         mesh_idx: int
     ) -> habitat_sim.simulator.Simulator: 
@@ -209,7 +228,7 @@ class SpatialSoundMixDatasetBuilder:
 
         #setup acoustics
         acoustics_cfg = habitat_sim.RLRAudioPropagationConfiguration()
-        acoustics_cg.enableMaterials = True
+        acoustics_cfg.enableMaterials = True
         acoustics_cfg.temporalCoherence = True
 
         #setup audio sources
@@ -230,16 +249,11 @@ class SpatialSoundMixDatasetBuilder:
         cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
 
         sim = habitat_sim.Simulator(cfg)
-        agent = sim.get_agent(0)
+        sim.seed(self.seed)
 
-        #set initial audio source positions
-        for i in range(len(audio_sources_idxes)): 
-            valid_floor_pos = sim.pathfinder.get_random_navigable_point()
-            initial_pos = self.set_random_elevation(valid_floor_pos)
-            sensor = agent._sensors[f"audio_source+{i}"]
-            sensor.setAudioSourceTransform(valid_floor_pos)
+        #set initial sim positions
+        self.set_random_audio_source_positions(sim, num_sources)
 
-        sim.step({})
         return sim
 
     """
@@ -284,12 +298,12 @@ class SpatialSoundMixDatasetBuilder:
             start = padding
             end = sequence_samples - padding
 
-            sample_idx = random.randing(start, end)
+            sample_idx = random.randint(start, end)
             start_step = sample_idx // sequence_samples
             q.set_cue_start_step(start_step)
 
         sequence = AudioSequence(cues, sequence_samples, samples_per_step)
-        return sequence
+        return sequence, sample_rate
 
     """
     create_audio_trajectories
@@ -320,6 +334,7 @@ class SpatialSoundMixDatasetBuilder:
     source and 0 corresponds to no source. 
     """
     def create_activity_array(
+        self, 
         signal: np.ndarray, 
         threshold: float = 0.01
     ) -> np.ndarray: 
@@ -333,11 +348,18 @@ class SpatialSoundMixDatasetBuilder:
     generate_stationary_data_instace
 
     @breif: Generates one instance of simulated audio with static positioning. 
+    The current setup is for generating BSC data but can be easily altered
+    by simply returning the target audio separation as well. 
 
     @param: 
+        sim: the habit_sim simulator for ray tracing
+        audio_sequence: the audio sequence for enumerating time slices
+        num_channels: the number of channels of the sim
     @return: 
     """
     def generate_stationary_data_instance(
+        self, 
+        sim: habitat_sim.simulator.Simulator,
         audio_sequence: AudioSequence, 
         num_channels: int = 2
     ) -> dict: 
@@ -345,8 +367,38 @@ class SpatialSoundMixDatasetBuilder:
         source_counts = np.zeros((num_channels, audio_sequence.max_samples))
 
         for i in range(len(audio_sequence)): 
+            #calculate current RIRs
+            obs = sim.get_sensor_observations()
             audio_slices = audio_sequence[i]
 
+            s_start = i * audio_sequence.samples_per_step
+            s_end = s_start + audio_sequence.samples_per_step
+
+            #convolve RIRs for current time step 
+            for s in audio_slices: 
+                #s_audio (channels, samples)
+                s_name, s_audio = s
+
+                rir = obs[s_name] 
+
+                left_reciever_channel = ss.fftconvolve(s_audio[0, :], rir, mode="full")
+                right_reciever_channel = ss.fftconvolve(s_audio[1, :], rir, mode="full")
+
+                left_activity_mask = self.create_activity_array(s_audio[0, :])
+                right_activity_mask = self.create_activity_array(s_audio[1, :])
+
+                #increment counts
+                source_counts[0, s_start:s_end] += left_activity_mask
+                source_counts[1, s_start:s_end] += right_activity_mask
+
+                #overlap add audio
+                mix_audio[0, s_start:s_end] += left_reciever_channel
+                mix_audio[1, s_start:s_end] += right_reciever_channel
+
+            #normalize audio mix
+            amp_max = np.max(np.abs(mix_audio))
+            if amp_max > 0: 
+                mix_audio /= amp_max
 
         return {
             "mix_audio": mix_audio, 
@@ -370,10 +422,45 @@ class SpatialSoundMixDatasetBuilder:
     """
     generate_static_instance_for_scene
 
-    @brief: generates all the static instances for the current audio space
+    @brief: generates all the static instances for the current hm3d scene. 
+    This writes all the audio as well and builds the simulator for the
+    current scene.
     """
-    def generate_static_instances_for_scene(): 
-        pass
+    def generate_stationary_instances_for_scene(
+        self,
+        mesh_idx: str, 
+        num_sensors: int, 
+        num_states: int, 
+        instance_name: str,
+        data_write_path: str, 
+        step_duration: float = 0.2, 
+    ) -> None: 
+        sim  = self.initialize_sim_scene(num_sensors, mesh_idx)
+
+        #create folder for examples
+        write_dir = os.path.join(data_write_path, instance_name)
+        os.make_dirs(write_dir)
+
+        """
+        generate num_states unique configurations in this room
+        with this AudioSensor count.
+        """
+        for i in range(num_states): 
+            self.set_random_audio_source_positions(sim, num_sensors)
+            random_sources_indices = [random.randint(0, len(self.data_dir)+1)]
+            source_paths = [self.data_dir[i] for i in random_sources_indices]
+            source_sequence, sr = self.create_audio_cue_sequence(
+                source_paths, step_duration=step_duration, 
+            )
+
+            data_instance = self.generate_stationary_data_instance(sim, source_sequence)
+            write_path_audio = os.path.join(write_dir, f"audio_instance_{i}.wav")
+            write_path_counts = os.path.join(write_dir, f"count_instance_{i}.npy")
+
+            #write audio and source counts
+            sf.write(write_path_audio, data_instance['mix_audio'], sr)
+            np.save(write_path_counts, data_instance['source_counts'])
+
 
     """
     generate_dynamic_instances_for_scene
