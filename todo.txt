@@ -27,3 +27,9 @@ API-keys
 	token-secret : e0d4dbfcc297bad4de7611be699d8a5b
 	token-id : dce18cce81daa48b
 
+
+Habitat-Sim Installation instructions: 
+	-> for audio you must build from source with pip and the audio flag
+	-> make sure to cap cpu count to avoid crashing during build
+	-> there is an error in LLVM somewhere which requires turning something off
+
