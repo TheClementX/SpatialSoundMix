@@ -43,6 +43,7 @@ import soundfile as sf
 import scipy.signal as ss 
 import random
 from tqdm import tqdm 
+import sys
 
 """
 AudioCue
@@ -66,9 +67,33 @@ class AudioCue:
         if sample_rate != 44100.0: 
             raise ValueError("Sample rate not 44100.0 in AudioCue instantiation")
         self.sample_rate = sample_rate
+        self.activity_mask = self.create_activity_array(self.audio)
 
     def set_cue_start_step(self, start_step: int) -> None: 
         self.start_step = start_step
+
+    """
+    create_activity_array
+
+    a function to compute exactly when a slice of audio is playing vs 
+    silent. Use the hilbert transform approach.  
+
+    #TODO: mathematically check the validity of this activity counting 
+    approach
+
+    @return: a binary mask where 1 corresponds to an active signal
+    source and 0 corresponds to no source. 
+    """
+    def create_activity_array(
+        self, 
+        signal: np.ndarray, 
+        threshold: float = 0.01
+    ) -> np.ndarray: 
+        analytic_signal = ss.hilbert(signal)
+        envelope = np.abs(analytic_signal)
+        activity_mask = (envelope > threshold).astype(int)
+
+        return activity_mask 
 
 """
 AudioSequence
@@ -101,7 +126,8 @@ class AudioSequence:
                 start = (time - q.start_step) * self.samples_per_step
                 end = start + self.samples_per_step
                 cur_audio = q.audio[start:end]
-                result.append((f"audio_source_{i}", cur_audio))
+                cur_mask = q.activity_mask[start:end]
+                result.append((f"audio_source_{i}", cur_audio, cur_mask))
 
         return result
 
@@ -299,7 +325,7 @@ class SpatialSoundMixDatasetBuilder:
         #select audio source start times
         for q in cues: 
             start = padding
-            end = sequence_samples - padding
+            end = sequence_samples - padding - q.num_samples
 
             sample_idx = random.randint(start, end)
             start_step = sample_idx // samples_per_step
@@ -324,28 +350,6 @@ class SpatialSoundMixDatasetBuilder:
     def create_receiver_trajectories(self): 
         pass 
 
-    """
-    create_activity_array
-
-    a function to compute exactly when a slice of audio is playing vs 
-    silent. Use the hilbert transform approach.  
-
-    #TODO: mathematically check the validity of this activity counting 
-    approach
-
-    @return: a binary mask where 1 corresponds to an active signal
-    source and 0 corresponds to no source. 
-    """
-    def create_activity_array(
-        self, 
-        signal: np.ndarray, 
-        threshold: float = 0.01
-    ) -> np.ndarray: 
-        analytic_signal = ss.hilbert(signal)
-        envelope = np.abs(analytic_signal)
-        activity_mask = (envelope > threshold).astype(int)
-
-        return activity_mask 
 
     """
     generate_stationary_data_instace
@@ -384,12 +388,12 @@ class SpatialSoundMixDatasetBuilder:
             #convolve RIRs for current time step 
             for s in audio_slices: 
                 #s_audio (channels, samples)
-                s_name, s_audio = s
+                s_name, s_audio, s_mask = s
                 if len(s_audio) == 0: 
                     continue # don't process empty audio
 
                 s_start = i * audio_sequence.samples_per_step
-                s_end = min(s_start + len(s_audio), audio_sequence.max_samples)
+                s_end = min(s_start + len(s_mask), audio_sequence.max_samples)
                 counts_len = s_end - s_start
 
                 rir = np.array(obs[s_name])
@@ -398,9 +402,8 @@ class SpatialSoundMixDatasetBuilder:
                 right_reciever_channel = ss.fftconvolve(s_audio, rir[1, :], mode="full")
 
                 #increment counts
-                activity_mask = self.create_activity_array(s_audio)
-                source_counts[0, s_start:s_end] += activity_mask[:counts_len]
-                source_counts[1, s_start:s_end] += activity_mask[:counts_len]
+                source_counts[0, s_start:s_end] += s_mask[:counts_len]
+                source_counts[1, s_start:s_end] += s_mask[:counts_len]
 
                 #calculate ending positions adjusting for reverb tails
                 left_len = len(left_reciever_channel)
@@ -422,7 +425,8 @@ class SpatialSoundMixDatasetBuilder:
 
         return {
             "mix_audio": mix_audio, 
-            "source_counts": source_counts
+            "source_counts": source_counts, 
+            "sources": [q.audio for q in audio_sequence.cues]
         }
 
 
@@ -493,10 +497,15 @@ class SpatialSoundMixDatasetBuilder:
 
             write_path_audio = os.path.join(write_dir, f"audio_instance_{i}.wav")
             write_path_counts = os.path.join(write_dir, f"count_instance_{i}.npy")
+            write_path_source = os.path.join(write_dir, f"audio_instance_{i}")
 
             #write audio and source counts
             sf.write(write_path_audio, data_instance['mix_audio'].T, int(sr))
             np.save(write_path_counts, data_instance['source_counts'])
+
+            for i, src in enumerate(data_instance["sources"]): 
+                path = write_path_source + f"_source_{i}.wav"
+                sf.write(path, src.T, int(sr))
 
     """
     generate_dynamic_instances_for_scene
