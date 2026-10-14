@@ -20,10 +20,13 @@ DATA_WRITE_PATH = "/home/clem3nti/projects/SpatialSoundMix/data_test"
 INSTANCE_NAME = "test_instance"
 
 def test_static_instance_generation():
+    print("loading dataset builder")
     dataset_builder = SpatialSoundMixDatasetBuilder(
         DATA_DIRS, MESH_DIRS, STEP_DURATION, SAMPLE_RATE, SEED
     )
+    print("dataset builder loaded")
 
+    print("generating instances")
     dataset_builder.generate_stationary_instances_for_scene(
         mesh_dir = dataset_builder.mesh_paths[0], 
         num_sensors = 8, 

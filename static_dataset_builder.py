@@ -42,6 +42,7 @@ import numpy as np
 import soundfile as sf
 import scipy.signal as ss 
 import random
+from tqdm import tqdm 
 
 """
 AudioCue
@@ -215,12 +216,11 @@ class SpatialSoundMixDatasetBuilder:
         mesh_path: str
     ) -> habitat_sim.simulator.Simulator: 
         #setup Backend and scene
+        print(f"loading scene with {num_sources} sources at : {mesh_path}")
         backend_cfg = habitat_sim.SimulatorConfiguration()
         backend_cfg.scene_id = mesh_path
         backend_cfg.enable_physics = True
         backend_cfg.random_seed = self.seed
-
-        #TODO initialize navmesh as well for navigation
 
         #setup acoustics
         acoustics_cfg = habitat_sim.RLRAudioPropagationConfiguration()
@@ -247,8 +247,16 @@ class SpatialSoundMixDatasetBuilder:
         sim = habitat_sim.Simulator(cfg)
         sim.seed(self.seed)
 
+        #initialize navmesh
+        navmesh_path = mesh_path[:-4] + ".navmesh"
+        nav_mesh_exit = sim.pathfinder.load_nav_mesh(navmesh_path)
+
+        if not nav_mesh_exit: 
+            raise ValueError("attempted loading an invalid navmesh")
+
         #set initial sim positions
         self.set_random_audio_source_positions(sim, num_sources)
+        print("seen initialized")
 
         return sim
 
@@ -361,28 +369,38 @@ class SpatialSoundMixDatasetBuilder:
         mix_audio = np.zeros((num_channels, audio_sequence.max_samples))
         source_counts = np.zeros((num_channels, audio_sequence.max_samples))
 
-        for i in range(len(audio_sequence)): 
-            #calculate current RIRs
-            obs = sim.get_sensor_observations()
-            audio_slices = audio_sequence[i]
+        prog_bar = tqdm(
+            range(len(audio_sequence)), 
+            desc="Generating Sequence", 
+            leave=False
+        )
 
-            s_start = i * audio_sequence.samples_per_step
-            s_end = s_start + audio_sequence.samples_per_step
+        #only get observations once for stationary audio
+        obs = sim.get_sensor_observations()
+        for i in prog_bar: 
+            #calculate current RIRs
+            audio_slices = audio_sequence[i]
 
             #convolve RIRs for current time step 
             for s in audio_slices: 
                 #s_audio (channels, samples)
                 s_name, s_audio = s
+                if len(s_audio) == 0: 
+                    continue # don't process empty audio
 
-                rir = obs[s_name] 
+                s_start = i * audio_sequence.samples_per_step
+                s_end = min(s_start + len(s_audio), audio_sequence.max_samples)
+                counts_len = s_end - s_start
+
+                rir = np.array(obs[s_name])
 
                 left_reciever_channel = ss.fftconvolve(s_audio, rir[0, :], mode="full")
                 right_reciever_channel = ss.fftconvolve(s_audio, rir[1, :], mode="full")
 
                 #increment counts
                 activity_mask = self.create_activity_array(s_audio)
-                source_counts[0, s_start:s_end] += activity_mask
-                source_counts[1, s_start:s_end] += activity_mask
+                source_counts[0, s_start:s_end] += activity_mask[:counts_len]
+                source_counts[1, s_start:s_end] += activity_mask[:counts_len]
 
                 #calculate ending positions adjusting for reverb tails
                 left_len = len(left_reciever_channel)
@@ -397,10 +415,10 @@ class SpatialSoundMixDatasetBuilder:
                 mix_audio[0, s_start:mix_end_left] += left_reciever_channel[:left_len]
                 mix_audio[1, s_start:mix_end_right] += right_reciever_channel[:right_len]
 
-            #normalize audio mix
-            amp_max = np.max(np.abs(mix_audio))
-            if amp_max > 0: 
-                mix_audio /= amp_max
+        #normalize audio mix after generation
+        amp_max = np.max(np.abs(mix_audio))
+        if amp_max > 0: 
+            mix_audio /= amp_max
 
         return {
             "mix_audio": mix_audio, 
@@ -443,7 +461,7 @@ class SpatialSoundMixDatasetBuilder:
         mesh_path = ""
         if mesh_type == "glb": 
             for p in os.listdir(mesh_dir): 
-                if p.endswith(".glb"): 
+                if p.endswith(".basis.glb"): 
                     mesh_path = os.path.join(mesh_dir, p)
                     break
         else: 
@@ -459,7 +477,7 @@ class SpatialSoundMixDatasetBuilder:
         generate num_states unique configurations in this room
         with this AudioSensor count.
         """
-        for i in range(num_states): 
+        for i in tqdm(range(num_states)): 
             self.set_random_audio_source_positions(sim, num_sensors)
             random_sources_indices = [
                 random.randint(0, len(self.data_paths)-1) for _ in range(num_sensors)
@@ -469,14 +487,16 @@ class SpatialSoundMixDatasetBuilder:
                 source_paths, step_duration=step_duration, 
             )
 
+            print(f"   -> Generating instnance {i} for scene at : {mesh_path}")
             data_instance = self.generate_stationary_data_instance(sim, source_sequence)
+            print("    -> Generation done")
+
             write_path_audio = os.path.join(write_dir, f"audio_instance_{i}.wav")
             write_path_counts = os.path.join(write_dir, f"count_instance_{i}.npy")
 
             #write audio and source counts
-            sf.write(write_path_audio, data_instance['mix_audio'].T, sr)
+            sf.write(write_path_audio, data_instance['mix_audio'].T, int(sr))
             np.save(write_path_counts, data_instance['source_counts'])
-
 
     """
     generate_dynamic_instances_for_scene
