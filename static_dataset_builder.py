@@ -26,7 +26,7 @@ DATA GENERATION STEPS:
         for some fixed amount of AudioSensor and Reciever configurations: 
             for some number of overlapping speaker sequences: 
                 1.) generate stationary data corresponding to the Audio Scape
-                2.) generate dynamic data corresponding to teh Audio Scape 
+                2.) generate dynamic data corresponding to the Audio Scape 
 
 
 Audio Rendering: In general simulation will be broken down into some number of steps s. 
@@ -163,7 +163,8 @@ class SpatialSoundMixDatasetBuilder:
             ])
 
         self.mesh_dirs = mesh_dirs
-        self.mesh_paths = []
+        #this is a list of the directories containing specific meshes
+        self.mesh_paths = [] 
         for p_dir in self.mesh_dirs:
             self.mesh_paths.extend([
                 os.path.join(p_dir, dir) for dir in os.listdir(p_dir)
@@ -178,6 +179,14 @@ class SpatialSoundMixDatasetBuilder:
     set_random_elevation
 
     @brief: add elevation to a point. This simulates the height of a speaker. 
+    @param: 
+        sim: the habitat-sim instance
+        point: (3,) the point to add elevation to 
+        default_height: the default height for unbounded rooms
+        min_height: the minimum allowed height
+        ceiling_offset: the amount to depress a point from the ceiling
+    @return: 
+        a new elevated point    
     """
     def set_random_elevation(
         self, 
@@ -212,6 +221,12 @@ class SpatialSoundMixDatasetBuilder:
     """
     @brief randomly set the AudioSensors in a sim object
     to valid locations.
+
+    @param: 
+        sim: the simulation whos audio sensor positions will 
+        be set.
+        num_sources: the number of audio sources associated 
+        with the sim object.
     """
     def set_random_audio_source_positions(
         self,
@@ -235,6 +250,13 @@ class SpatialSoundMixDatasetBuilder:
 
     @brief: Initializes the habitat-sim simulation state with a scene and 
     number of sources
+
+    @param: 
+        num_sources: the number of AudioSensors to associate with the 
+        new scene
+        mesh_path: the path to the .glb file 
+    @return: 
+        the new simulator
     """
     def initialize_sim_scene(
         self,
@@ -450,6 +472,16 @@ class SpatialSoundMixDatasetBuilder:
     @brief: generates all the static instances for the current hm3d scene. 
     This writes all the audio as well and builds the simulator for the
     current scene.
+
+    @param: 
+        mesh_dir: the directory containing the scene and nav mesh
+        num_sensors: the number of AudioSensors for this scene
+        num_states: the number of different position configurations to 
+        generate
+        instance_name: the name for writig
+        data_write_path: where the new scene data folder will be written
+        step_duration: how many seconds are processed at once
+        mesh_type: the type of mesh to load
     """
     def generate_stationary_instances_for_scene(
         self,
@@ -458,6 +490,7 @@ class SpatialSoundMixDatasetBuilder:
         num_states: int, 
         instance_name: str,
         data_write_path: str, 
+        return_sources: bool = True, 
         step_duration: float = 0.2, 
         mesh_type: str = "glb"
     ) -> None: 
@@ -495,17 +528,23 @@ class SpatialSoundMixDatasetBuilder:
             data_instance = self.generate_stationary_data_instance(sim, source_sequence)
             print("    -> Generation done")
 
-            write_path_audio = os.path.join(write_dir, f"audio_instance_{i}.wav")
-            write_path_counts = os.path.join(write_dir, f"count_instance_{i}.npy")
-            write_path_source = os.path.join(write_dir, f"audio_instance_{i}")
+
+            #make instance write dir
+            instance_write_dir = os.path.join(write_dir, f"instance_{i}")
+            os.makedirs(instance_write_dir, exist_ok=True)
+
+            write_path_audio = os.path.join(instance_write_dir, f"mix_audio.wav")
+            write_path_counts = os.path.join(instance_write_dir, f"counts.npy")
+            write_path_source = os.path.join(instance_write_dir, f"source")
 
             #write audio and source counts
             sf.write(write_path_audio, data_instance['mix_audio'].T, int(sr))
             np.save(write_path_counts, data_instance['source_counts'])
 
-            for i, src in enumerate(data_instance["sources"]): 
-                path = write_path_source + f"_source_{i}.wav"
-                sf.write(path, src.T, int(sr))
+            if return_sources: 
+                for i, src in enumerate(data_instance["sources"]): 
+                    path = write_path_source + f"_{i}.wav"
+                    sf.write(path, src.T, int(sr))
 
     """
     generate_dynamic_instances_for_scene
@@ -520,7 +559,24 @@ class SpatialSoundMixDatasetBuilder:
 
     @breif: builds the whole train dataset
     """
-    def build_dataset(self): 
-        pass
-
-
+    def build_dataset(
+        self, 
+        num_states_per_scene: int, 
+        max_min_sensors: tuple[int, int], 
+        data_write_path: str, 
+        return_sources: bool = True,
+        step_duration: float = 0.2, 
+        mesh_type: str = "glb" 
+    ) -> None: 
+        lo, hi = max_min_sensors
+        prog_bar = tqdm(
+            enumerate(self.mesh_paths), 
+            desc="Building Scene Data"
+        )
+        for i, path in prog_bar: 
+            instance_name = f"scene_{i}"
+            num_sensors = random.randint(lo, hi)
+            self.generate_stationary_instances_for_scene(
+                path, num_sensors, num_states_per_scene, instance_name, 
+                data_write_path, return_sources, step_duration, mesh_type
+            )
