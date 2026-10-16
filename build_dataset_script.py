@@ -9,7 +9,7 @@ import os
 #testing paths and configuration
 data_base_dir = "/home/clem3nti/projects/SpatialSoundMix/data/ears_dataset"
 DATA_DIRS = [os.path.join(data_base_dir, dir) for dir in os.listdir(data_base_dir)]
-MESH_DIRS = ["/home/clem3nti/projects/SpatialSoundMix/data/versioned_data/hm3d-0.2/hm3d/minival"]
+MESH_DIRS = ["/home/clem3nti/projects/SpatialSoundMix/data/versioned_data/hm3d-0.2/hm3d/train"]
 DATA_WRITE_PATH = "/home/clem3nti/projects/SpatialSoundMix/data_test"
 STEP_DURATION = 0.2
 SAMPLE_RATE = 44100.0
@@ -17,7 +17,7 @@ SEED = 42
 
 #dataset_builder parameters
 NUM_STATES_PER_SCENE = 5
-RETURN_SOURCES = False
+RETURN_SOURCES = True
 MAX_MIN_SENSORS = (4, 8)
 
 def main(): 

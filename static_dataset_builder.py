@@ -46,8 +46,6 @@ from tqdm import tqdm
 import sys
 
 """
-AudioCue
-
 @brief: Used in a list to queue audio objects for playing. 
 an AudioCue stores its audio and some metadata. an AudioCue
 stores its start step which is used for sequencing in and AudioSequence.
@@ -73,8 +71,6 @@ class AudioCue:
         self.start_step = start_step
 
     """
-    create_activity_array
-
     a function to compute exactly when a slice of audio is playing vs 
     silent. Use the hilbert transform approach.  
 
@@ -96,8 +92,6 @@ class AudioCue:
         return activity_mask 
 
 """
-AudioSequence
-
 @brief: The main class for managing samples and the timing 
 of audio playing. This is an indexable object which can 
 be used to return the audio to be convolved with a RIR
@@ -135,8 +129,6 @@ class AudioSequence:
         return self.max_steps
 
 """
-StaticBSCDatastBuilder
-
 @breif: The class used for creating the full SpatialSoundMix
 train dataset. 
 """
@@ -164,11 +156,12 @@ class SpatialSoundMixDatasetBuilder:
 
         self.mesh_dirs = mesh_dirs
         #this is a list of the directories containing specific meshes
+        #filter out non mesh dirs
         self.mesh_paths = [] 
         for p_dir in self.mesh_dirs:
-            self.mesh_paths.extend([
-                os.path.join(p_dir, dir) for dir in os.listdir(p_dir)
-            ])
+            for dir in os.listdir(p_dir): 
+                path = os.path.join(p_dir, dir)
+                if os.path.isdir(path): self.mesh_paths.append(path)
 
         self.step_duration = step_duration
         self.sample_rate = sample_rate
@@ -176,8 +169,6 @@ class SpatialSoundMixDatasetBuilder:
 
 
     """
-    set_random_elevation
-
     @brief: add elevation to a point. This simulates the height of a speaker. 
     @param: 
         sim: the habitat-sim instance
@@ -244,10 +235,7 @@ class SpatialSoundMixDatasetBuilder:
         #warmup simulator to new positions
         sim.step({})
 
-
     """
-    initialize_sim_scene
-
     @brief: Initializes the habitat-sim simulation state with a scene and 
     number of sources
 
@@ -309,8 +297,6 @@ class SpatialSoundMixDatasetBuilder:
         return sim
 
     """
-    create_audio_queue_sequence
-
     @brief: sequences audio in time randomely to make 
     a sequence of AudioCues.
     @return: An AudioSequence object used for get the 
@@ -357,16 +343,29 @@ class SpatialSoundMixDatasetBuilder:
         return sequence, sample_rate
 
     """
-    create_audio_trajectories
+    @brief:
+        creates a list of points corresponding to a 
+        valid navigable path that an AudioSensor or Reciever 
+        can take. 
+    @params
 
+    """
+    def create_navigable_trajectory(
+        sim: habitat_sim.simulator.Simulator, 
+        start_point: np.ndarray, 
+        num_steps: int, 
+        distance_per_step: float, 
+        other_trajectories: list[list[np.ndarray]]
+    ) -> list[np.ndarray]: 
+        pass
+
+    """
     @brief: creates the trajectories for AudioSensors in habitat-sim
     """
     def create_audio_trajectories(self): 
         pass
 
     """
-    create_receiver_trajectories
-
     @brief: creates the trajectories for the agent / reciever in habitat-sim
     """
     def create_receiver_trajectories(self): 
@@ -374,8 +373,6 @@ class SpatialSoundMixDatasetBuilder:
 
 
     """
-    generate_stationary_data_instace
-
     @breif: Generates one instance of simulated audio with static positioning. 
     The current setup is for generating BSC data but can be easily altered
     by simply returning the target audio separation as well. 
@@ -445,16 +442,29 @@ class SpatialSoundMixDatasetBuilder:
         if amp_max > 0: 
             mix_audio /= amp_max
 
+        #generate source audio : Sources are mono
+        sources = []
+        for q in audio_sequence.cues: 
+            #prepend silence
+            audio = q.audio
+            pre_silence_len = q.start_step * audio_sequence.samples_per_step
+            pre_silence = np.zeros(pre_silence_len)
+            p_audio = np.concatenate([pre_silence, audio], axis=0)
+
+            #postpend silence
+            post_silence_len = audio_sequence.max_samples - len(p_audio)
+            post_silence = np.zeros(post_silence_len)
+            pre_post_audio = np.concatenate([p_audio, post_silence], axis=0)
+            sources.append(pre_post_audio)
+
         return {
             "mix_audio": mix_audio, 
-            "source_counts": source_counts, 
-            "sources": [q.audio for q in audio_sequence.cues]
+            "source_counts": source_counts,
+            "sources": sources
         }
 
 
     """
-    generate_dynamic_data_instances
-
     @brief: Generates one instance of a dynamic data point using
     audio sensor paths and receiver paths. 
     """
@@ -467,8 +477,6 @@ class SpatialSoundMixDatasetBuilder:
         pass
 
     """
-    generate_static_instance_for_scene
-
     @brief: generates all the static instances for the current hm3d scene. 
     This writes all the audio as well and builds the simulator for the
     current scene.
@@ -482,6 +490,7 @@ class SpatialSoundMixDatasetBuilder:
         data_write_path: where the new scene data folder will be written
         step_duration: how many seconds are processed at once
         mesh_type: the type of mesh to load
+    @note: destroys the scene before returning
     """
     def generate_stationary_instances_for_scene(
         self,
@@ -546,9 +555,12 @@ class SpatialSoundMixDatasetBuilder:
                     path = write_path_source + f"_{i}.wav"
                     sf.write(path, src.T, int(sr))
 
-    """
-    generate_dynamic_instances_for_scene
+        #clean up and free sim context 
+        #might need to change to reconfigure
+        sim.close()
+        del sim
 
+    """
     @brief: generates all dynamic instance of audio for a scene
     """
     def generate_dynamic_instances_for_scene(self): 
@@ -558,6 +570,9 @@ class SpatialSoundMixDatasetBuilder:
     build_dataset
 
     @breif: builds the whole train dataset
+    @Note: Need to edit audio source writing so that audio 
+    sources are same length as audio mixes for slicing. In essence
+    audio sources need to be the target split of audio mixes
     """
     def build_dataset(
         self, 
@@ -568,6 +583,8 @@ class SpatialSoundMixDatasetBuilder:
         step_duration: float = 0.2, 
         mesh_type: str = "glb" 
     ) -> None: 
+        os.makedirs(data_write_path, exist_ok=True)
+
         lo, hi = max_min_sensors
         prog_bar = tqdm(
             enumerate(self.mesh_paths), 
