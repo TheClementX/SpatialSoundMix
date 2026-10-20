@@ -43,7 +43,7 @@ import soundfile as sf
 import scipy.signal as ss 
 import random
 from tqdm import tqdm 
-import sys
+import gc
 
 """
 @brief: Used in a list to queue audio objects for playing. 
@@ -142,10 +142,16 @@ class SpatialSoundMixDatasetBuilder:
         self, 
         data_dirs: list[str], 
         mesh_dirs: list[str], 
+        audio_absorption_file: str,
+        dataset_config_file: str, 
         step_duration: float, 
         sample_rate: float = 44100.0,
         seed: int = 42,
+        filter_by_semantic_scene: bool = True
     ) -> None: 
+
+        self.audio_absorption_file = audio_absorption_file
+        self.dataset_config_file = dataset_config_file
 
         self.data_dirs = data_dirs
         self.data_paths = []
@@ -161,11 +167,27 @@ class SpatialSoundMixDatasetBuilder:
         for p_dir in self.mesh_dirs:
             for dir in os.listdir(p_dir): 
                 path = os.path.join(p_dir, dir)
-                if os.path.isdir(path): self.mesh_paths.append(path)
+                if not os.path.isdir(path): continue
+                #check for semantics files if necessary
+                if (
+                    filter_by_semantic_scene 
+                    and not self.scene_contains_semantics(path)
+                ): continue
+
+                self.mesh_paths.append(path)
 
         self.step_duration = step_duration
         self.sample_rate = sample_rate
         self.seed = seed
+
+    def scene_contains_semantics(self, scene_path: str) -> bool:
+        scene_files = os.listdir(scene_path)
+        path_base = os.path.basename(scene_path).split("-")[-1]
+        semantic_name = path_base + ".basis.semantic.glb"
+        for f in scene_files: 
+            if f == semantic_name: return True
+        return False
+
 
 
     """
@@ -249,19 +271,24 @@ class SpatialSoundMixDatasetBuilder:
     def initialize_sim_scene(
         self,
         num_sources: int, 
-        mesh_path: str
+        mesh_path: str,
+        sim: habitat_sim.Simulator = None
     ) -> habitat_sim.simulator.Simulator: 
         #setup Backend and scene
         print(f"loading scene with {num_sources} sources at : {mesh_path}")
         backend_cfg = habitat_sim.SimulatorConfiguration()
-        backend_cfg.scene_id = mesh_path
+
+        #get scene handle not full file path
+        scene_handle = mesh_path.split("hm3d/")[-1]
+        backend_cfg.scene_dataset_config_file = "default"
+        backend_cfg.load_semantic_mesh = True
         backend_cfg.enable_physics = True
         backend_cfg.random_seed = self.seed
 
         #setup acoustics
         acoustics_cfg = habitat_sim.RLRAudioPropagationConfiguration()
-        acoustics_cfg.enableMaterials = False #must download materials dataset 
-        #acoustics_cfg.temporalCoherence = True
+        acoustics_cfg.enableMaterials = True 
+        acoustics_cfg.temporalCoherence = True
 
         #setup audio sources
         sensor_specs = []
@@ -278,10 +305,39 @@ class SpatialSoundMixDatasetBuilder:
 
         agent_cfg = habitat_sim.AgentConfiguration()
         agent_cfg.sensor_specifications = sensor_specs
-        cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
 
-        sim = habitat_sim.Simulator(cfg)
+        #begin stage manager setup for managing file lloads
+        if sim is None: 
+            metadata_mediator = habitat_sim.metadata.MetadataMediator()
+        else: 
+            #if sim is being reconfigured mediator already exists.
+            metadata_mediator = sim.metadata_mediator
+
+        stage_mgr = metadata_mediator.stage_template_manager 
+        stage_name = mesh_path
+        stage_attr = stage_mgr.create_template(stage_name)
+
+        stage_attr.render_asset_handle = mesh_path
+        stage_attr.semantic_asset_handle = mesh_path[:-4] + ".semantic.glb"
+        stage_attr.house_filename = mesh_path[:-4] + ".semantic.txt"
+
+        stage_mgr.register_template(stage_attr, stage_name)
+        backend_cfg.scene_id = stage_name
+        #end stage manager setup
+
+        cfg = habitat_sim.Configuration(
+            backend_cfg, [agent_cfg], metadata_mediator=metadata_mediator
+        )
+
+        if sim is None: 
+            sim = habitat_sim.Simulator(cfg)
+        else: 
+            sim.reconfigure(cfg)
         sim.seed(self.seed)
+
+        if len(sim.semantic_scene.objects) == 0: 
+            print("semantics not loaded properly in scene initialization")
+            raise ValueError("Semantics not loaded")
 
         #initialize navmesh
         navmesh_path = mesh_path[:-4] + ".navmesh"
@@ -290,9 +346,15 @@ class SpatialSoundMixDatasetBuilder:
         if not nav_mesh_exit: 
             raise ValueError("attempted loading an invalid navmesh")
 
+        #load acoustic file for each sensor 
+        agent = sim.get_agent(0)
+        for sensor_name, sensor in agent._sensors.items(): 
+            #only audio sensors are made so only audio sensors are accessed
+            sensor.setAudioMaterialsJSON(self.audio_absorption_file)
+
         #set initial sim positions
         self.set_random_audio_source_positions(sim, num_sources)
-        print("seen initialized")
+        print("scene initialized")
 
         return sim
 
@@ -501,7 +563,8 @@ class SpatialSoundMixDatasetBuilder:
         data_write_path: str, 
         return_sources: bool = True, 
         step_duration: float = 0.2, 
-        mesh_type: str = "glb"
+        mesh_type: str = "glb", 
+        sim: habitat_sim.simulator.Simulator = None
     ) -> None: 
         #parse mesh path 
         mesh_path = ""
@@ -513,7 +576,7 @@ class SpatialSoundMixDatasetBuilder:
         else: 
             raise ValueError("only .glb type meshes supported for simulation")
 
-        sim  = self.initialize_sim_scene(num_sensors, mesh_path)
+        sim  = self.initialize_sim_scene(num_sensors, mesh_path, sim=sim)
 
         #create folder for examples
         write_dir = os.path.join(data_write_path, instance_name)
@@ -555,10 +618,7 @@ class SpatialSoundMixDatasetBuilder:
                     path = write_path_source + f"_{i}.wav"
                     sf.write(path, src.T, int(sr))
 
-        #clean up and free sim context 
-        #might need to change to reconfigure
-        sim.close()
-        del sim
+        return sim
 
     """
     @brief: generates all dynamic instance of audio for a scene
@@ -573,6 +633,9 @@ class SpatialSoundMixDatasetBuilder:
     @Note: Need to edit audio source writing so that audio 
     sources are same length as audio mixes for slicing. In essence
     audio sources need to be the target split of audio mixes
+
+    bad_scenes: 
+        8, 35, 51, 55, 78
     """
     def build_dataset(
         self, 
@@ -590,10 +653,13 @@ class SpatialSoundMixDatasetBuilder:
             enumerate(self.mesh_paths), 
             desc="Building Scene Data"
         )
+        sim = None
         for i, path in prog_bar: 
+            if i <= 55: continue
             instance_name = f"scene_{i}"
             num_sensors = random.randint(lo, hi)
-            self.generate_stationary_instances_for_scene(
+            sim = self.generate_stationary_instances_for_scene(
                 path, num_sensors, num_states_per_scene, instance_name, 
-                data_write_path, return_sources, step_duration, mesh_type
+                data_write_path, return_sources, step_duration, mesh_type,
+                sim=sim
             )

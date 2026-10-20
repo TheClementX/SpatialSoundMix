@@ -15,14 +15,21 @@ STEP_DURATION = 0.2
 SAMPLE_RATE = 44100.0
 SEED = 42
 
+#TODO set these file paths
+AUDIO_ABSORPTION_FILE = "/home/clem3nti/projects/SpatialSoundMix/data/mp3d_material_config.json"
+DATASET_CONFIG_FILE = "/home/clem3nti/projects/SpatialSoundMix/data/versioned_data/hm3d-0.2/hm3d/hm3d_annotated_basis.scene_dataset_config.json"
+
 #dataset_builder parameters
-NUM_STATES_PER_SCENE = 5
+NUM_STATES_PER_SCENE = 1
 RETURN_SOURCES = True
-MAX_MIN_SENSORS = (4, 8)
+MAX_MIN_SENSORS = (2, 4)
 
 def main(): 
     dataset_builder = SpatialSoundMixDatasetBuilder(
-        DATA_DIRS, MESH_DIRS, STEP_DURATION, SAMPLE_RATE, SEED
+        DATA_DIRS, MESH_DIRS, 
+        AUDIO_ABSORPTION_FILE, 
+        DATASET_CONFIG_FILE, 
+        STEP_DURATION, SAMPLE_RATE, SEED
     )
     dataset_builder.build_dataset(
         NUM_STATES_PER_SCENE, MAX_MIN_SENSORS, DATA_WRITE_PATH, 
