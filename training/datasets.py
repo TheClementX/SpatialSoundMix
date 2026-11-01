@@ -92,11 +92,11 @@ class SpatialSoundMixStaticDataset(Dataset):
             start_idx = random.randint(0, max_len)
 
         end_idx = start_idx + self.slice_length
-        data = {"mix_audio": mix_audio[start_idx:end_idx]}
-        data.update([(f"source_{i}", audio) for i, audio in enumerate(sources)])
+        mix_audio_slice = mix_audio[start_idx:end_idx]
+        sources = torch.stack(sources)
 
         #return slices
-        return data
+        return mix_audio_slice, sources
 
 
 """
