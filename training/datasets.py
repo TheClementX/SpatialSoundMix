@@ -3,6 +3,8 @@ datasets.py
 
 SpatialSoundMixStaticDataset
 
+SpatialSoundMixInferenceDataSet
+
 data_root structure: 
     --> root
       |--> train
@@ -42,7 +44,7 @@ class SpatialSoundMixStaticDataset(Dataset):
         data_root: str, 
         clip_length: int = 4,
         random_slices: bool = True,
-        sample_rate: float = 44100.0
+        sample_rate: int = 44100
     ) -> None: 
         self.data_root = data_root
         self.clip_length = clip_length
@@ -56,35 +58,35 @@ class SpatialSoundMixStaticDataset(Dataset):
         ]
 
         self.instance_paths = []
-        for sp in self.scenes: 
+        for sp in self.scene_paths: 
             self.instance_paths.extend(
-                [sp + instance for instance in os.listdir(sp)]
+                [os.path.join(sp, instance) for instance in os.listdir(sp)]
             )
+        self.isntance_paths = sorted(self.instance_paths)
 
     def __len__(self) -> int: 
         return len(self.instance_paths)
 
+    """
+    @return 
+        mix_audio_slice: (B, chan, samples) chan = 2 for Spatial Soundmix
+        sources: (B, num_speakers, samples)
+    """
     def __getitem__(
         self, 
         idx: int
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         ip = self.instance_paths[idx]
 
         #(samples, channels)
-        mix_audio, mix_sr = sf.load(ip + "mix_audio.wav")
+        mix_audio, mix_sr = sf.read(os.path.join(ip, "mix_audio.wav"))
         #(samples, channels) -> (channels, samples)
-        mix_audio = mix_audio.T
-        sources = []
-        for file in os.listdir(ip): 
-            if file.startswith("source"): 
-                sp = ip + file
-                s, sr = sf.load(sp)
-                sources.append(s.T)
+        mix_audio = torch.from_numpy(mix_audio.T).float()
 
         #select random start
         start_idx = 0
         if self.random_slices: 
-            audio_len = mix_audio.shape[0]
+            audio_len = mix_audio.shape[1]
             if audio_len < self.slice_length: 
                 raise ValueError("audio example to short and underflowed window length")
 
@@ -92,8 +94,15 @@ class SpatialSoundMixStaticDataset(Dataset):
             start_idx = random.randint(0, max_len)
 
         end_idx = start_idx + self.slice_length
-        mix_audio_slice = mix_audio[start_idx:end_idx]
-        sources = torch.stack(sources)
+        mix_audio_slice = mix_audio[:, start_idx:end_idx]
+
+        sources = []
+        for file in os.listdir(ip): 
+            if file.startswith("source"): 
+                sp = os.path.join(ip, file)
+                s, sr = sf.read(sp)
+                sources.append(torch.from_numpy(s.T[:, start_idx:end_idx]).float())
+        sources = torch.stack(sources, dim=0)
 
         #return slices
         return mix_audio_slice, sources
@@ -119,13 +128,39 @@ class SpatialSoundMixDynamicDataset(Dataset):
 """
 @brief: a simple dataset for storing instances for inference
 """
-
 class SpatialSoundMixInferenceDataset(Dataset): 
-    def __init__(self) -> None: 
-        pass
+    def __init__(
+        self, 
+        data_root: str
+    ) -> None: 
+        self.data_root = data_root
+
+        self.scene_paths = [
+            os.path.join(self.data_root, sp) for sp in os.listdir(self.data_root)
+        ]
+
+        self.instance_paths = []
+        for sp in self.scene_paths: 
+            self.instance_paths.extend(
+                [os.path.join(sp, instance )for instance in os.listdir(sp)]
+            )
+        self.instance_paths = sorted(self.instance_paths)
 
     def __len__(self) -> int: 
-        pass
+        return len(self.instance_paths)
 
-    def __getitem__(self, idx: int) -> torch.Tensor: 
-        pass
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        ip = self.instance_paths[idx]
+
+        #(samples, channels)
+        mix_audio, mix_sr = sf.read(os.path.join(ip, "mix_audio.wav"))
+        #(samples, channels) -> (channels, samples)
+        mix_audio = torch.from_numpy(mix_audio.T).float()
+        sources = []
+        for file in os.listdir(ip): 
+            if file.startswith("source"): 
+                sp = os.path.join(ip, file)
+                s, sr = sf.read(sp)
+                sources.append(torch.from_numpy(s.T).float())
+
+        return mix_audio, torch.stack(sources, dim=0)
