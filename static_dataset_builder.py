@@ -183,7 +183,7 @@ class SpatialSoundMixDatasetBuilder:
     def scene_contains_semantics(self, scene_path: str) -> bool:
         scene_files = os.listdir(scene_path)
         path_base = os.path.basename(scene_path).split("-")[-1]
-        semantic_name = path_base + ".basis.semantic.glb"
+        semantic_name = path_base + ".semantic.glb"
         for f in scene_files: 
             if f == semantic_name: return True
         return False
@@ -220,7 +220,7 @@ class SpatialSoundMixDatasetBuilder:
 
         if len(hit_record.hits) > 0: 
             distance_to_ceiling = hit_record.hits[0].ray_distance
-            max_height = distance_to_ceiling - ceiling_offset
+            max_height = max(min_height, distance_to_ceiling - ceiling_offset)
         else: 
             max_height = default_height
 
@@ -244,18 +244,53 @@ class SpatialSoundMixDatasetBuilder:
     def set_random_audio_source_positions(
         self,
         sim: habitat_sim.simulator.Simulator,
-        num_sources: int
+        num_sources: int,
+        island_index: int, 
+        max_distance: float = float("inf") 
     ) -> None: 
-
+        #set position of agent to random point
         agent = sim.get_agent(0)
+        agent_state = habitat_sim.AgentState()
+        agent_pos = sim.pathfinder.get_random_navigable_point(island_index=island_index)
+        agent_state.position = agent_pos
+        agent.set_state(agent_state)
+
+        #set position of sensors to random points
         for i in range(num_sources): 
-            valid_floor_pos = sim.pathfinder.get_random_navigable_point()
+            valid_floor_pos = sim.pathfinder.get_random_navigable_point_near(
+                circle_center=agent_pos,
+                radius=max_distance,
+                max_tries=400,
+                island_index=island_index
+            )
+            path = habitat_sim.ShortestPath()
+            path.requested_start = agent_pos
+            path.requested_end = valid_floor_pos
+            found_path = sim.pathfinder.find_path(path)
+
+            if not found_path: 
+                valid_floor_pos = sim.pathfinder.get_random_navigable_point(
+                    island_index=island_index
+                )
+
             initial_pos = self.set_random_elevation(sim, valid_floor_pos)
             sensor = agent._sensors[f"audio_source_{i}"]
             sensor.setAudioSourceTransform(initial_pos)
 
+
         #warmup simulator to new positions
         sim.step({})
+
+
+    def get_largest_island_for_scene(
+        self, 
+        sim: habitat_sim.simulator.Simulator
+    )-> int: 
+        pf = sim.pathfinder 
+        areas = [pf.island_area(i) for i in range(pf.num_islands)]
+        largest_index = int(np.argmax(areas))
+
+        return largest_index
 
     """
     @brief: Initializes the habitat-sim simulation state with a scene and 
@@ -272,23 +307,27 @@ class SpatialSoundMixDatasetBuilder:
         self,
         num_sources: int, 
         mesh_path: str,
-        sim: habitat_sim.Simulator = None
+        sim: habitat_sim.Simulator = None,
+        max_distance: float = 10.0
     ) -> habitat_sim.simulator.Simulator: 
         #setup Backend and scene
         print(f"loading scene with {num_sources} sources at : {mesh_path}")
         backend_cfg = habitat_sim.SimulatorConfiguration()
 
         #get scene handle not full file path
-        scene_handle = mesh_path.split("hm3d/")[-1]
-        backend_cfg.scene_dataset_config_file = "default"
+        backend_cfg.scene_dataset_config_file = self.dataset_config_file
+        backend_cfg.scene_id = mesh_path.split("hm3d/")[-1]
         backend_cfg.load_semantic_mesh = True
+        #this line was the fix to our bug
+        #the habitat-sim backend was misinterpreting semantic.glb as geometry
+        backend_cfg.use_semantic_textures = False 
         backend_cfg.enable_physics = True
         backend_cfg.random_seed = self.seed
 
         #setup acoustics
         acoustics_cfg = habitat_sim.RLRAudioPropagationConfiguration()
         acoustics_cfg.enableMaterials = True 
-        acoustics_cfg.temporalCoherence = True
+        acoustics_cfg.temporalCoherence = False
 
         #setup audio sources
         sensor_specs = []
@@ -306,28 +345,7 @@ class SpatialSoundMixDatasetBuilder:
         agent_cfg = habitat_sim.AgentConfiguration()
         agent_cfg.sensor_specifications = sensor_specs
 
-        #begin stage manager setup for managing file lloads
-        if sim is None: 
-            metadata_mediator = habitat_sim.metadata.MetadataMediator()
-        else: 
-            #if sim is being reconfigured mediator already exists.
-            metadata_mediator = sim.metadata_mediator
-
-        stage_mgr = metadata_mediator.stage_template_manager 
-        stage_name = mesh_path
-        stage_attr = stage_mgr.create_template(stage_name)
-
-        stage_attr.render_asset_handle = mesh_path
-        stage_attr.semantic_asset_handle = mesh_path[:-4] + ".semantic.glb"
-        stage_attr.house_filename = mesh_path[:-4] + ".semantic.txt"
-
-        stage_mgr.register_template(stage_attr, stage_name)
-        backend_cfg.scene_id = stage_name
-        #end stage manager setup
-
-        cfg = habitat_sim.Configuration(
-            backend_cfg, [agent_cfg], metadata_mediator=metadata_mediator
-        )
+        cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
 
         if sim is None: 
             sim = habitat_sim.Simulator(cfg)
@@ -353,7 +371,10 @@ class SpatialSoundMixDatasetBuilder:
             sensor.setAudioMaterialsJSON(self.audio_absorption_file)
 
         #set initial sim positions
-        self.set_random_audio_source_positions(sim, num_sources)
+        island_idx = self.get_largest_island_for_scene(sim)
+        self.set_random_audio_source_positions(
+            sim, num_sources, island_idx, max_distance=max_distance
+        )
         print("scene initialized")
 
         return sim
@@ -564,7 +585,8 @@ class SpatialSoundMixDatasetBuilder:
         return_sources: bool = True, 
         step_duration: float = 0.2, 
         mesh_type: str = "glb", 
-        sim: habitat_sim.simulator.Simulator = None
+        sim: habitat_sim.simulator.Simulator = None,
+        max_distance: float = 10.0
     ) -> None: 
         #parse mesh path 
         mesh_path = ""
@@ -576,7 +598,12 @@ class SpatialSoundMixDatasetBuilder:
         else: 
             raise ValueError("only .glb type meshes supported for simulation")
 
-        sim  = self.initialize_sim_scene(num_sensors, mesh_path, sim=sim)
+        print("checking mesh path")
+        print(os.listdir(os.path.dirname(mesh_path)))
+
+        sim  = self.initialize_sim_scene(
+            num_sensors, mesh_path, sim=sim, max_distance=max_distance
+        )
 
         #create folder for examples
         write_dir = os.path.join(data_write_path, instance_name)
@@ -587,7 +614,8 @@ class SpatialSoundMixDatasetBuilder:
         with this AudioSensor count.
         """
         for i in tqdm(range(num_states)): 
-            self.set_random_audio_source_positions(sim, num_sensors)
+            island_idx = self.get_largest_island_for_scene(sim)
+            self.set_random_audio_source_positions(sim, num_sensors, island_idx)
             random_sources_indices = [
                 random.randint(0, len(self.data_paths)-1) for _ in range(num_sensors)
             ]
@@ -644,7 +672,8 @@ class SpatialSoundMixDatasetBuilder:
         data_write_path: str, 
         return_sources: bool = True,
         step_duration: float = 0.2, 
-        mesh_type: str = "glb" 
+        mesh_type: str = "glb",
+        max_distance: float = 10.0
     ) -> None: 
         os.makedirs(data_write_path, exist_ok=True)
 
@@ -654,12 +683,13 @@ class SpatialSoundMixDatasetBuilder:
             desc="Building Scene Data"
         )
         sim = None
-        for i, path in prog_bar: 
-            if i <= 55: continue
+        for i, path in prog_bar:
+            if i <= 49: continue
+            if i in [8, 25, 35, 51, 55, 78, 86, 96, 112]: continue 
             instance_name = f"scene_{i}"
             num_sensors = random.randint(lo, hi)
             sim = self.generate_stationary_instances_for_scene(
                 path, num_sensors, num_states_per_scene, instance_name, 
                 data_write_path, return_sources, step_duration, mesh_type,
-                sim=sim
+                sim=sim, max_distance=max_distance
             )
