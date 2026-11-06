@@ -40,7 +40,7 @@ class SpeechSeparationTrainer:
         stft_parameters: dict, 
         optimizer: optim.Optimizer, 
         loss_fn: nn.Module, 
-        lr_scheduler: optim.lr_scheudler.LRScheduler, 
+        lr_scheduler: optim.lr_scheduler.LRScheduler, 
         batch_scheduler: bool, 
         train_loader: data.DataLoader, 
         val_loader: data.DataLoader, 
@@ -63,7 +63,7 @@ class SpeechSeparationTrainer:
             stft_parameters['n_fft'], 
             stft_parameters['hop_length'], 
             stft_parameters['win_length'], 
-            stft_parameters['channels'],
+            stft_parameters['in_channels'],
             stft_parameters['window']
         )
         #complex valued spectrograms
@@ -71,7 +71,7 @@ class SpeechSeparationTrainer:
             stft_parameters['n_fft'], 
             stft_parameters['hop_length'], 
             stft_parameters['win_length'], 
-            stft_parameters['channels'],
+            stft_parameters['out_channels'],
             stft_parameters['window']
         )
 
@@ -84,16 +84,20 @@ class SpeechSeparationTrainer:
         self.val_loader = val_loader #load clips for validation
         self.inf_loader = inf_loader #load full tracks for inference
 
+        print(f"train loader shape/s : {[t.shape for t in next(iter(self.train_loader))]}")
+        print(f"val loader shape/s : {[t.shape for t in next(iter(self.val_loader))]}")
+        print(f"inf loader shape/s : {[t.shape for t in next(iter(self.inf_loader))]}")
+
         self.inf_chunk_size = inf_chunk_size
         self.inf_hop_size = inf_hop_size
 
+        self.grad_acum_steps = grad_acum_steps
         if self.grad_acum_steps < 1: 
             raise ValueError("gradient accumulation steps must be at least 1")
-        self.grad_acum_steps = grad_acum_steps
         self.grad_acum = self.grad_acum_steps != 1
 
         self.mixed_precision = mixed_precision 
-        self.scaler = torch.amp.GradScaler(device, enabled=True)
+        self.scaler = GradScaler(device, enabled=True)
         
         self.wandb_key = wandb_key
         self.use_wandb = use_wandb
@@ -132,8 +136,11 @@ class SpeechSeparationTrainer:
         norm_buffer = torch.zeros((B, 1, seq_len), device=mix_audio.device)
 
         for i, chunk in enumerate(audio_chunks): 
-            #predict spectrograms
-            audio_spec = self.stft(chunk)
+            #predict spectrograms must reshape for input to SpatialNet
+            audio_spec = self.stft(chunk) #(B, C, T, F, 2)
+            model_in = audio_spec.permute(0, 2, 3, 1, 4)
+            B, C, _, T, F = model_in.shape
+            model_in = model_in.reshape((B, T, F, C*2))
             pred_spectrograms = self.model(audio_spec)
 
             #(B, F, T, 2*num_speakers)
@@ -201,13 +208,21 @@ class SpeechSeparationTrainer:
             mix, targets = example
             mix, targets = mix.to(self.device), targets.to(self.device)
 
-            #process with stft 
-            stft_mix = self.stft(mix)
+            #process with stft and reshape for input
+            stft_mix = self.stft(mix) #(B, C, T, F, 2)
+            model_in = stft_mix.permute(0, 2, 3, 1, 4)
+            B, C, _, T, F = model_in.shape
+            model_in = model_in.reshape((B, T, F, C*2))
 
             #mixed precision calculate loss
             with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):
-                tf_predictions = self.model(stft_mix)
+                tf_predictions = self.model(model_in)
+                #reshape
+                B, F, T, _ = tf_predictions.shape
+                tf_predictions = tf_predictions.reshape(B, F, T, -1, 2)
+                tf_predictions = tf_predictions.permute(0, 3, 1, 2, 4)
                 t_predictions = self.istft(tf_predictions)
+
                 loss, _ = pit(
                     t_predictions, targets, self.loss_fn, 
                     mode="speaker_wise", eval_func="min"
@@ -441,7 +456,7 @@ class SpeechSeparationTrainer:
             run = wandb.init(
                 name=run_name, 
                 entity="glundgre-carnegie-mellon-university", 
-                project="VocumMSS",
+                project="SpatialSoundMix",
                 config=config
             )
             wandb.watch(self.model, log="gradients", log_freq=20)

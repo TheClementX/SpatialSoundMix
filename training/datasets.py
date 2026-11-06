@@ -28,7 +28,7 @@ import torch
 import os 
 import soundfile as sf 
 import random
-import torch.utils.data.Dataset as Dataset
+from torch.utils.data import Dataset
 
 """
 @brief: This dataset is meant to be used when a SpatialSoundMix instance
@@ -36,12 +36,13 @@ has been generated via scene. This is when each mix has already been made
 with static positioning per instance. An instance is denoted by a choice of 
 speakers, speaker positions, and a microphone position. 
 
-@pre: assumes that mix and souruces are same length for slicing
+@pre: assumes that mix and sources are same length for slicing
 """
 class SpatialSoundMixStaticDataset(Dataset): 
     def __init__(
         self, 
         data_root: str, 
+        num_speakers: int, 
         clip_length: int = 4,
         random_slices: bool = True,
         sample_rate: int = 44100
@@ -50,6 +51,7 @@ class SpatialSoundMixStaticDataset(Dataset):
         self.clip_length = clip_length
         self.random_slices = random_slices
         self.sample_rate = sample_rate 
+        self.num_speakers = num_speakers
 
         self.slice_length = self.sample_rate * self.clip_length
 
@@ -62,7 +64,7 @@ class SpatialSoundMixStaticDataset(Dataset):
             self.instance_paths.extend(
                 [os.path.join(sp, instance) for instance in os.listdir(sp)]
             )
-        self.isntance_paths = sorted(self.instance_paths)
+        self.instance_paths = sorted(self.instance_paths)
 
     def __len__(self) -> int: 
         return len(self.instance_paths)
@@ -101,7 +103,11 @@ class SpatialSoundMixStaticDataset(Dataset):
             if file.startswith("source"): 
                 sp = os.path.join(ip, file)
                 s, sr = sf.read(sp)
-                sources.append(torch.from_numpy(s.T[:, start_idx:end_idx]).float())
+                sources.append(torch.from_numpy(s[start_idx:end_idx]).float())
+
+        num_silent = self.num_speakers - len(sources)
+        for _ in range(num_silent): 
+            sources.append(torch.zeros(self.slice_length))
         sources = torch.stack(sources, dim=0)
 
         #return slices
@@ -131,9 +137,11 @@ class SpatialSoundMixDynamicDataset(Dataset):
 class SpatialSoundMixInferenceDataset(Dataset): 
     def __init__(
         self, 
-        data_root: str
+        data_root: str, 
+        num_speakers: int
     ) -> None: 
         self.data_root = data_root
+        self.num_speakers = num_speakers
 
         self.scene_paths = [
             os.path.join(self.data_root, sp) for sp in os.listdir(self.data_root)
@@ -156,11 +164,17 @@ class SpatialSoundMixInferenceDataset(Dataset):
         mix_audio, mix_sr = sf.read(os.path.join(ip, "mix_audio.wav"))
         #(samples, channels) -> (channels, samples)
         mix_audio = torch.from_numpy(mix_audio.T).float()
+
         sources = []
         for file in os.listdir(ip): 
             if file.startswith("source"): 
                 sp = os.path.join(ip, file)
                 s, sr = sf.read(sp)
-                sources.append(torch.from_numpy(s.T).float())
+                sources.append(torch.from_numpy(s).float())
 
-        return mix_audio, torch.stack(sources, dim=0)
+        num_silent = self.num_speakers - len(sources)
+        for _ in range(num_silent): 
+            sources.append(torch.zeros(len(sources[0])))
+        sources = torch.stack(sources, dim=0)
+
+        return mix_audio, sources

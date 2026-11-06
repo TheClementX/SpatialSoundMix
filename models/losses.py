@@ -4,7 +4,7 @@ losses.py
 the necessary losses for training BSS models
 """
 
-from stft_modules import * 
+from .stft_modules import * 
 
 class MAELoss(nn.Module): 
     def __init__(
@@ -12,7 +12,7 @@ class MAELoss(nn.Module):
         hop_length: int = 147, 
         resolutions: list[int] = [4096, 2048, 1024, 512, 256], 
         channels: int = 1, 
-        window: str = "hann_window" 
+        window: str = "hann" 
     ) -> None: 
         super().__init__()
 

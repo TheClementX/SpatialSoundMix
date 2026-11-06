@@ -31,7 +31,7 @@ class STFTModule(nn.Module):
         self.win_length = win_length
         self.channels = channels
         
-        if window == "hann_window":
+        if window == "hann":
             window_fn = torch.hann_window(self.win_length)
         else:
             raise ValueError("unsupported window function")
@@ -91,7 +91,7 @@ class iSTFTModule(nn.Module):
         self.win_length = win_length
         self.channels = channels
         
-        if window == "hann_window":
+        if window == "hann":
             window_fn = torch.hann_window(self.win_length)
         else:
             raise ValueError("unsupported window function")
@@ -99,7 +99,7 @@ class iSTFTModule(nn.Module):
 
     """
     @params: 
-        x: (B, channels, F, L_fft, 2) a complex valued ctensor where the last
+        x: (B, channels, F, L_fft, 2) a real valued ctensor where the last
         dimension is an imaginary number
     @return: 
         a batch of raw audio (B, channels, L)
