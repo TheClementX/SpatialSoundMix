@@ -103,6 +103,27 @@ class SpeechSeparationTrainer:
         self.use_wandb = use_wandb
         self.device = device
 
+    def audio_to_spatial_net_in(self, mix: torch.Tensor) -> torch.Tensor: 
+        #(B, C, F, T, 2)
+        audio_spec = self.stft(mix) 
+        B, C, F, T, _ = audio_spec.shape
+        #(B, F, T, C, 2)
+        model_in = audio_spec.permute(0, 2, 3, 1, 4).contiguous()
+        #(B, F, T, C*2)
+        model_in = model_in.reshape((B, F, T, C*2))
+        return model_in
+
+    def spatial_net_out_to_audio(self, model_out: torch.Tensor, length: int) -> torch.Tensor: 
+        B, F, T, _ = model_out.shape
+        model_out = model_out.float()
+        #(B, F, T, 2*num_speakers)
+        model_out = model_out.reshape((B, F, T, -1, 2))
+        #(B, num_speakers, F, T, 2)
+        model_out = model_out.permute(0, 3, 1, 2, 4).contiguous()
+        #(B, num_speakers, samples)
+        pred_audio = self.istft(model_out, length)
+        return pred_audio
+
     """
     need to reimplement overlap add average with STF windows 
 
@@ -137,19 +158,10 @@ class SpeechSeparationTrainer:
 
         for i, chunk in enumerate(audio_chunks): 
             #predict spectrograms must reshape for input to SpatialNet
-            audio_spec = self.stft(chunk) #(B, C, T, F, 2)
-            model_in = audio_spec.permute(0, 2, 3, 1, 4)
-            B, C, _, T, F = model_in.shape
-            model_in = model_in.reshape((B, T, F, C*2))
-            pred_spectrograms = self.model(audio_spec)
-
-            #(B, F, T, 2*num_speakers)
-            B, F, T, _ = pred_spectrograms.shape
-            pred_spectrograms = pred_spectrograms.reshape(B, F, T, -1, 2)
-            #(B, num_speakers, F, T, 2)
-            pred_spectrograms = pred_spectrograms.permute(0, 3, 1, 2, 4)
-            #(B, num_speakers, samples)
-            pred_audio = self.istft(pred_spectrograms)
+            istft_length = chunk.shape[-1]
+            model_in = self.audio_to_spatial_net_in(chunk)
+            pred_spectrograms = self.model(model_in)
+            pred_audio = self.spatial_net_out_to_audio(pred_spectrograms, istft_length)
 
             #match audio with hungarian if not the first iteration
             start_idx = i * hop_size
@@ -207,26 +219,22 @@ class SpeechSeparationTrainer:
         for i, example in progress: 
             mix, targets = example
             mix, targets = mix.to(self.device), targets.to(self.device)
+            istft_length = mix.shape[-1]
 
-            #process with stft and reshape for input
-            stft_mix = self.stft(mix) #(B, C, T, F, 2)
-            model_in = stft_mix.permute(0, 2, 3, 1, 4)
-            B, C, _, T, F = model_in.shape
-            model_in = model_in.reshape((B, T, F, C*2))
-
-            #mixed precision calculate loss
+            model_in = self.audio_to_spatial_net_in(mix)
             with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):
                 tf_predictions = self.model(model_in)
                 #reshape
-                B, F, T, _ = tf_predictions.shape
-                tf_predictions = tf_predictions.reshape(B, F, T, -1, 2)
-                tf_predictions = tf_predictions.permute(0, 3, 1, 2, 4)
-                t_predictions = self.istft(tf_predictions)
+                t_predictions = self.spatial_net_out_to_audio(tf_predictions, istft_length)
 
                 loss, _ = pit(
-                    t_predictions, targets, self.loss_fn, 
-                    mode="speaker_wise", eval_func="min"
+                    t_predictions.unsqueeze(2), 
+                    targets.unsqueeze(2), 
+                    self.loss_fn, 
+                    mode="speaker-wise", eval_func="min"
                 )
+                loss = loss.mean()
+
                 if self.grad_acum: 
                     loss /= self.grad_acum_steps
 
@@ -301,20 +309,22 @@ class SpeechSeparationTrainer:
         for example in progress: 
             mix, targets = example
             mix, targets = mix.to(self.device), targets.to(self.device)
+            istft_length = mix.shape[-1]
 
-            stft_mix = self.stft(mix)
-
-            #mixed precision calculate loss
+            model_in = self.audio_to_spatial_net_in(mix)
             with torch.amp.autocast(device_type=self.device):
                 with torch.inference_mode(): 
-                    tf_prediction = self.model(stft_mix)
-                    t_prediction = self.istft(tf_prediction)
+                    tf_predictions = self.model(model_in)
+                    t_predictions = self.spatial_net_out_to_audio(tf_predictions, istft_length)
+
                     loss, _ = pit(
-                        t_prediction, targets, self.loss_fn, 
-                        mode="speaker_wise", eval_func="min"
+                        t_predictions.unsqueeze(2), 
+                        targets.unsqueeze(2), 
+                        self.loss_fn, 
+                        mode="speaker-wise", eval_func="min"
                 )
 
-            batch_loss = loss.item()
+            batch_loss = loss.mean().item()
             loss_meter.update(batch_loss)
 
             #track memory usage
@@ -370,17 +380,21 @@ class SpeechSeparationTrainer:
                     )
 
                     mae_loss, _ = pit(
-                        prediction, targets, self.loss_fn, 
-                        mode="speaker_wise", eval_func="min"
+                        prediction.unsqueeze(2), 
+                        targets.unsqueeze(2), 
+                        self.loss_fn, 
+                        mode="speaker-wise", eval_func="min"
                     )
 
                     si_sdr_loss, _ = pit(
-                        prediction, targets, si_sdr, 
-                        mode="speaker_wise", eval_func="max"
+                        prediction, 
+                        targets, 
+                        si_sdr, 
+                        mode="speaker-wise", eval_func="max"
                     )
 
-            batch_mae_loss = mae_loss.item()
-            batch_si_sdr_loss = si_sdr_loss.item()
+            batch_mae_loss = mae_loss.mean().item()
+            batch_si_sdr_loss = si_sdr_loss.mean().item()
             mae_meter.update(batch_mae_loss)
             si_sdr_meter.update(batch_si_sdr_loss)
 
@@ -472,9 +486,9 @@ class SpeechSeparationTrainer:
             print(f"============== EPOCH : {i} =================")
             metrics_and_data = {}
             
-            train_metrics = self.train_epoch()
+            # train_metrics = self.train_epoch()
             val_metrics = self.validate_epoch()
-            metrics_and_data.update(train_metrics)
+            # metrics_and_data.update(train_metrics)
             metrics_and_data.update(val_metrics)
 
             if i % 5 == 0: 

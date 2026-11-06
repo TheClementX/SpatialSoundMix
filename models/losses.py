@@ -40,8 +40,8 @@ class MAELoss(nn.Module):
     ) -> torch.Tensor: 
         #combine batch and channel Bc = B * channels
         L = predicted_audio.shape[-1]
-        l2_pred_aud = predicted_audio.view(-1, L)
-        l2_tar_aud = target_audio.view(-1, L)
+        l2_pred_aud = predicted_audio.reshape(-1, L)
+        l2_tar_aud = target_audio.reshape(-1, L)
 
         #(B*chan)
         wav_dif = l2_tar_aud - l2_pred_aud

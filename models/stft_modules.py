@@ -101,14 +101,16 @@ class iSTFTModule(nn.Module):
     @params: 
         x: (B, channels, F, L_fft, 2) a real valued ctensor where the last
         dimension is an imaginary number
+        length: the original length in samples of the input audio. 
+        used to accurately recreate audio
     @return: 
         a batch of raw audio (B, channels, L)
     """
     def forward(self, x: torch.Tensor, length: int) -> torch.Tensor: 
-        B, chan, F, L_fft = x.shape
+        B, chan, F, L_fft, _ = x.shape
         x = x.contiguous()
         c_spectrogram = torch.view_as_complex(x)
-        c_spectrogram = x.view(-1, F, L_fft)
+        c_spectrogram = c_spectrogram.view(-1, F, L_fft)
         audio = torch.istft(
             c_spectrogram, 
             self.n_fft, 

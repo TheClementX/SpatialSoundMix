@@ -19,9 +19,9 @@ config = {
     'num_layers': 8, 
     'num_freqs': 129, 
     "stft_parameters": {
-        "n_fft": 2048,
-        "hop_length": 512,
-        "win_length": 2048,
+        "n_fft": 256,
+        "hop_length": 128,
+        "win_length": 256,
         "in_channels": 2, #mixes are binaural
         "out_channels": 1, #separations are monaural
         "window": "hann"
@@ -31,13 +31,15 @@ config = {
     "train_root": "/home/clem3nti/projects/SpatialSoundMix/spatial_data/train", 
     "val_root": "/home/clem3nti/projects/SpatialSoundMix/spatial_data/val", 
     "test_root": "/home/clem3nti/projects/SpatialSoundMix/spatial_data/test", 
-    "clip_length": 4, 
+    "clip_length": 1, 
     "random_slices": True, 
     "sample_rate": 44100, 
 
     #training
     'lr': 5e-4, 
-    'batch_size': 32, 
+    'batch_size_train': 1, 
+    'batch_size_val': 4, 
+    'batch_size_inf': 1,
     'sample_rate': 44100,
     'epochs': 10, 
     'warmup_epochs': None, 
@@ -68,7 +70,7 @@ config = {
 def train(config): 
     model = SpatialNet(
         config['num_mics'] * 2, 
-        config['num_speakers'] * 4, 
+        config['num_speakers'] * 2, 
         config['dim_squeeze'], 
         config['num_layers'], 
         config['num_freqs'], 
@@ -105,7 +107,7 @@ def train(config):
 
     train_loader = DataLoader(
         dataset=train_dataset, 
-        batch_size=config['batch_size'],
+        batch_size=config['batch_size_train'],
         num_workers=config['num_workers'], 
         persistent_workers=config['persistent_workers'], 
         pin_memory=config['pin_memory'], 
@@ -115,7 +117,7 @@ def train(config):
 
     val_loader = DataLoader(
         dataset = val_dataset,
-        batch_size=1,
+        batch_size=config['batch_size_val'],
         num_workers=config['num_workers'], 
         persistent_workers=config['persistent_workers'], 
         pin_memory=config['pin_memory'], 
@@ -125,7 +127,7 @@ def train(config):
 
     inf_loader = DataLoader(
         dataset = inf_dataset,
-        batch_size=1,
+        batch_size=config['batch_size_inf'],
         num_workers=config['num_workers'], 
         persistent_workers=config['persistent_workers'], 
         pin_memory=config['pin_memory'], 
