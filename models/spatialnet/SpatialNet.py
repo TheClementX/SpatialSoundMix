@@ -7,6 +7,7 @@ from .base.non_linear import *
 from .base.linear_group import LinearGroup
 from torch import Tensor
 from torch.nn import MultiheadAttention
+import torch.utils.checkpoint as cp
 
 
 class SpatialNetLayer(nn.Module):
@@ -168,6 +169,7 @@ class SpatialNet(nn.Module):
             norms: List[str] = ("LN", "LN", "GN", "LN", "LN", "LN"),
             padding: str = 'zeros',
             full_share: int = 0,  # share from layer 0
+            checkpointing: bool = True
     ):
         super().__init__()
 
@@ -198,6 +200,7 @@ class SpatialNet(nn.Module):
 
         # decoder
         self.decoder = nn.Linear(in_features=dim_hidden, out_features=dim_output)
+        self.checkpointing = checkpointing
 
     def forward(self, x: Tensor, return_attn_score: bool = False) -> Tensor:
         # x: [Batch, Freq, Time, Feature]
@@ -209,7 +212,13 @@ class SpatialNet(nn.Module):
         x = x.reshape(B, F, T, H)
         for m in self.layers:
             setattr(m, "need_weights", return_attn_score)
-            x, attn = m(x)
+
+            #adding checkpointing for higher resolution audio
+            if self.training and self.checkpointing: 
+                x, attn = cp.checkpoint(m, x, use_reentrant=False)
+            else: 
+                x, attn = m(x)
+
             if return_attn_score:
                 attns.append(attn)
 

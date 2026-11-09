@@ -29,6 +29,7 @@ import os
 import soundfile as sf 
 import random
 from torch.utils.data import Dataset
+import torchaudio.transforms as T
 
 """
 @brief: This dataset is meant to be used when a SpatialSoundMix instance
@@ -45,12 +46,14 @@ class SpatialSoundMixStaticDataset(Dataset):
         num_speakers: int, 
         clip_length: int = 4,
         random_slices: bool = True,
-        sample_rate: int = 44100
+        sample_rate: int = 44100, 
+        d_sample_rate: int = 44100, 
     ) -> None: 
         self.data_root = data_root
         self.clip_length = clip_length
         self.random_slices = random_slices
         self.sample_rate = sample_rate 
+        self.d_sample_rate = d_sample_rate
         self.num_speakers = num_speakers
 
         self.slice_length = self.sample_rate * self.clip_length
@@ -65,6 +68,7 @@ class SpatialSoundMixStaticDataset(Dataset):
                 [os.path.join(sp, instance) for instance in os.listdir(sp)]
             )
         self.instance_paths = sorted(self.instance_paths)
+        self.resampler = T.Resample(orig_freq=sample_rate, new_freq=d_sample_rate)
 
     def __len__(self) -> int: 
         return len(self.instance_paths)
@@ -110,6 +114,10 @@ class SpatialSoundMixStaticDataset(Dataset):
             sources.append(torch.zeros(self.slice_length))
         sources = torch.stack(sources, dim=0)
 
+        #downsample
+        if self.d_sample_rate != self.sample_rate: 
+            mix_audio_slice = self.resampler(mix_audio_slice)
+            sources = self.resampler(sources) 
         #return slices
         return mix_audio_slice, sources
 

@@ -486,9 +486,9 @@ class SpeechSeparationTrainer:
             print(f"============== EPOCH : {i} =================")
             metrics_and_data = {}
             
-            # train_metrics = self.train_epoch()
+            train_metrics = self.train_epoch()
             val_metrics = self.validate_epoch()
-            # metrics_and_data.update(train_metrics)
+            metrics_and_data.update(train_metrics)
             metrics_and_data.update(val_metrics)
 
             if i % 5 == 0: 

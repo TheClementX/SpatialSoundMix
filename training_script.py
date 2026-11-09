@@ -9,6 +9,10 @@ import torch
 from torch.utils.data import DataLoader
 import torch.optim.lr_scheduler as lr 
 
+"""
+interact command: 
+srun --account=bjor-delta-gpu --partition=gpuA100x4-interactive --nodes=1 --ntasks=1 --gpus-per-node=1 --cpus-per-task=16 --mem=60g --time=01:00:00 --pty bash
+"""
 
 config = {
     "device": "cuda" if torch.cuda.is_available() else "cpu", 
@@ -17,39 +21,41 @@ config = {
     'num_mics': 2, 
     'dim_squeeze': 8, 
     'num_layers': 8, 
-    'num_freqs': 129, 
+    'num_freqs': 513, 
     "stft_parameters": {
-        "n_fft": 256,
-        "hop_length": 128,
-        "win_length": 256,
+        "n_fft": 1024,
+        "hop_length": 1024 // 2,
+        "win_length": 1024,
         "in_channels": 2, #mixes are binaural
         "out_channels": 1, #separations are monaural
         "window": "hann"
     }, 
 
     #datasets
-    "train_root": "/home/clem3nti/projects/SpatialSoundMix/spatial_data/train", 
-    "val_root": "/home/clem3nti/projects/SpatialSoundMix/spatial_data/val", 
-    "test_root": "/home/clem3nti/projects/SpatialSoundMix/spatial_data/test", 
-    "clip_length": 1, 
+    "train_root": "/projects/bjor/glundgren/SpatialSoundMix/r_data/train", 
+    "val_root": "/projects/bjor/glundgren/SpatialSoundMix/r_data/val", 
+    "test_root": "/projects/bjor/glundgren/SpatialSoundMix/r_data/test", 
+    "clip_length": 4, 
     "random_slices": True, 
     "sample_rate": 44100, 
 
     #training
     'lr': 5e-4, 
-    'batch_size_train': 1, 
+    'batch_size_train': 2, 
     'batch_size_val': 4, 
     'batch_size_inf': 1,
     'sample_rate': 44100,
+    'd_sample_rate': 44100, 
     'epochs': 10, 
     'warmup_epochs': None, 
     'grad_acum': True, 
-    'grad_acum_steps': 2, 
+    'grad_acum_steps': 8, 
     'mixed_precision': True, 
     'batch_scheduler': False, 
+    'checkpointing': True, 
 
     #dataloaders
-    'num_workers': 12, 
+    'num_workers': 16, 
     'pin_memory': True,
     'persistent_workers': False, 
     'prefetch_factor': 4,
@@ -59,11 +65,11 @@ config = {
     "inf_hopsize": 220500, 
 
     #wandb
-    'wandb_key': "", 
-    'use_wandb': False, 
+    'wandb_key': "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", 
+    'use_wandb': True, 
 
     #saving
-    'model_save_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints", 
+    'model_save_path': "/projects/bjor/glundgren/SpatialSoundMix/checkpoints", 
     'run_name': "ablation:1",
 }
 
@@ -74,6 +80,7 @@ def train(config):
         config['dim_squeeze'], 
         config['num_layers'], 
         config['num_freqs'], 
+        checkpointing = config['checkpointing']
     ).to(config['device'])
     print("model initialized")
 
@@ -88,7 +95,8 @@ def train(config):
         config['num_speakers'], 
         clip_length=config['clip_length'], 
         random_slices=config['random_slices'], 
-        sample_rate = config['sample_rate'] 
+        sample_rate = config['sample_rate'], 
+        d_sample_rate=config['d_sample_rate'],
     )
     
     val_dataset = SpatialSoundMixStaticDataset(
