@@ -65,3 +65,32 @@ class MAELoss(nn.Module):
         loss = l2_wavform + l2_spectrogram
         return loss.mean()
 
+
+class SA_SDR(nn.Module): 
+    def __init__(self): 
+        super().__init__(eps: float = 1e-8)
+        self.eps = eps
+
+    """
+    @params: 
+        sources: (B, num_speakers, len)
+        targets: (B, num_speakers, len)
+    """
+    def forward(
+        self, predictions: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor: 
+        #(B,)
+        target_l2_squared = torch.sum(targets ** 2, dim=(1, 2))
+        #(B,)
+        difference_l2_squared = torch.sum((targets - predictions)**2, dim=(1,2))
+        #(B,)
+        per_batch_sa_sdr = -10 * (
+            torch.log10(target_l2_squared + self.eps)
+            - torch.log10(difference_l2_squared + self.eps)
+        )
+        #(1,)
+        batch_sa_sdr = torch.mean(per_batch_sa_sdr)
+
+        return batch_sa_sdr
+
+
