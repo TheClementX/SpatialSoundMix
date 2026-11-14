@@ -21,20 +21,20 @@ config = {
     'num_mics': 2, 
     'dim_squeeze': 8, 
     'num_layers': 8, 
-    'num_freqs': 513, 
+    'num_freqs': 129, 
     "stft_parameters": {
-        "n_fft": 1024,
-        "hop_length": 1024 // 2,
-        "win_length": 1024,
+        "n_fft": 256,
+        "hop_length":  256 // 2,
+        "win_length": 256,
         "in_channels": 2, #mixes are binaural
         "out_channels": 1, #separations are monaural
         "window": "hann"
     }, 
 
     #datasets
-    "train_root": "/projects/bjor/glundgren/SpatialSoundMix/r_data/train", 
-    "val_root": "/projects/bjor/glundgren/SpatialSoundMix/r_data/val", 
-    "test_root": "/projects/bjor/glundgren/SpatialSoundMix/r_data/test", 
+    "train_root": "/home/clem3nti/projects/SpatialSoundMix/r_data/train", 
+    "val_root": "/home/clem3nti/projects/SpatialSoundMix/r_data/val", 
+    "test_root": "/home/clem3nti/projects/SpatialSoundMix/r_data/test", 
     "clip_length": 4, 
     "random_slices": True, 
     "sample_rate": 44100, 
@@ -42,11 +42,11 @@ config = {
     #training
     'lr': 5e-4, 
     'batch_size_train': 2, 
-    'batch_size_val': 4, 
+    'batch_size_val': 2, 
     'batch_size_inf': 1,
     'sample_rate': 44100,
-    'd_sample_rate': 44100, 
-    'epochs': 10, 
+    'd_sample_rate': 16000, 
+    'epochs': 100, 
     'warmup_epochs': None, 
     'grad_acum': True, 
     'grad_acum_steps': 8, 
@@ -55,7 +55,7 @@ config = {
     'checkpointing': True, 
 
     #dataloaders
-    'num_workers': 16, 
+    'num_workers': 8, 
     'pin_memory': True,
     'persistent_workers': False, 
     'prefetch_factor': 4,
@@ -69,11 +69,12 @@ config = {
     'use_wandb': True, 
 
     #saving
-    'model_save_path': "/projects/bjor/glundgren/SpatialSoundMix/checkpoints", 
-    'run_name': "ablation:1",
+    'model_save_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints", 
+    'run_name': "ablation:4:16khz-rog-sa_sdr",
 }
 
 def train(config): 
+    print(f"device {config['device']}")
     model = SpatialNet(
         config['num_mics'] * 2, 
         config['num_speakers'] * 2, 
