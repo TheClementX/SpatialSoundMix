@@ -301,6 +301,8 @@ class SpeechSeparationTrainer:
     def validate_epoch(self): 
         self.model.eval()
         loss_meter = AverageMeter()
+        hsa_sdr_meter = AverageMeter()
+        fsa_sdr_meter = AverageMeter()
 
         progress = tqdm(
             self.val_loader, 
@@ -328,9 +330,18 @@ class SpeechSeparationTrainer:
                         self.loss_fn, 
                         mode="speaker-wise", eval_func="min"
                     )
+                    
+                    hungarian_sa_sdr = self.hungarian_SA_SDR(t_predictions, targets)
+                    factorial_sa_sdr = self.factorial_SA_SDR(t_predictions, targets)
 
             batch_loss = loss.mean().item()
             loss_meter.update(batch_loss)
+
+            #sdr
+            batch_hsa_sdr_loss = hungarian_sa_sdr.mean().item()
+            batch_fsa_sdr_loss = factorial_sa_sdr.mean().item()
+            hsa_sdr_meter.update(batch_hsa_sdr_loss)
+            fsa_sdr_meter.update(batch_fsa_sdr_loss)
 
             #track memory usage
             if self.device == "cuda":
@@ -340,6 +351,8 @@ class SpeechSeparationTrainer:
             progress.set_postfix(
                 loss=f"{batch_loss:.4f}", 
                 avg_loss=f"{loss_meter.avg:.4f}", 
+                avg_hsa_sdr=f"{hsa_sdr_meter.avg:.5f}",
+                avg_fsa_sdr=f"{fsa_sdr_meter.avg:.5f}",
                 cur_mem=f"{current_mem:.2f}GB", 
                 max_mem=f"{peak_mem:.2f}GB"
             )
@@ -348,6 +361,8 @@ class SpeechSeparationTrainer:
         metrics = {
             "val_avg_loss": loss_meter.avg, 
             "val_peak_mem": peak_mem, 
+            "avg_val_hsa_sdr": hsa_sdr_meter.avg, 
+            "avg_val_hsa_sdr": fsa_sdr_meter.avg, 
         }
 
         return metrics
@@ -396,9 +411,11 @@ class SpeechSeparationTrainer:
                     factorial_sa_sdr = self.factorial_SA_SDR(prediction, targets)
 
             batch_mae_loss = mae_loss.mean().item()
+            mae_meter.update(batch_mae_loss)
+
+            #sdr metrics
             batch_hsa_sdr_loss = hungarian_sa_sdr.mean().item()
             batch_fsa_sdr_loss = factorial_sa_sdr.mean().item()
-            mae_meter.update(batch_mae_loss)
             hsa_sdr_meter.update(batch_hsa_sdr_loss)
             fsa_sdr_meter.update(batch_fsa_sdr_loss)
 
@@ -469,7 +486,8 @@ class SpeechSeparationTrainer:
         model_save_path: str,  
         run_name: str, 
         resume: bool = False, 
-        model_load_path: Optional[str] = None
+        model_load_path: Optional[str] = None, 
+        full_val_steps: int = 4, 
     ) -> None: 
         #setup wandb
         if self.use_wandb: 
@@ -498,7 +516,7 @@ class SpeechSeparationTrainer:
             metrics_and_data.update(train_metrics)
             metrics_and_data.update(val_metrics)
 
-            if True or i % 2 == 0: 
+            if i % full_val_steps == 0: 
                 separation_metrics = self.validate_full_separations()
                 metrics_and_data.update(separation_metrics)
 

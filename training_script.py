@@ -40,8 +40,8 @@ config = {
     "sample_rate": 44100, 
 
     #training
-    'lr': 5e-4, 
-    'batch_size_train': 2, 
+    'lr': 1e-3, 
+    'batch_size_train': 4, 
     'batch_size_val': 2, 
     'batch_size_inf': 1,
     'sample_rate': 44100,
@@ -53,6 +53,7 @@ config = {
     'mixed_precision': True, 
     'batch_scheduler': False, 
     'checkpointing': True, 
+    'full_val_steps': 4, 
 
     #dataloaders
     'num_workers': 8, 
@@ -71,6 +72,8 @@ config = {
     #saving
     'model_save_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints", 
     'run_name': "ablation:4:16khz-rog-sa_sdr",
+    'resume': False, 
+    'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth"
 }
 
 def train(config): 
@@ -166,6 +169,9 @@ def train(config):
         config, 
         config['model_save_path'], 
         config['run_name'],
+        resume = config['resume'], 
+        model_load_path = config['model_load_path'], 
+        full_val_steps = config['full_val_steps'], 
     )
 
 if __name__ == "__main__": 
