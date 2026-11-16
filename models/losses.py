@@ -6,6 +6,7 @@ the necessary losses for training BSS models
 
 from .stft_modules import * 
 import itertools
+from scipy.optimize import linear_sum_assignment
 
 class MAELoss(nn.Module): 
     def __init__(
@@ -66,7 +67,6 @@ class MAELoss(nn.Module):
         loss = l2_wavform + l2_spectrogram
         return loss.mean()
 
-
 """
 @brief: realigns predictions to match targets based on similarity 
 score with hungarian algorithm. Then computes SA_SDR
@@ -109,7 +109,7 @@ class hungarian_SA_SDR(nn.Module):
         #(B,)
         difference_l2_squared = torch.sum((targets - aligned_preds)**2, dim=(1,2))
         #(B,)
-        per_batch_sa_sdr = -10 * (
+        per_batch_sa_sdr = 10 * (
             torch.log10(target_l2_squared + self.eps)
             - torch.log10(difference_l2_squared + self.eps)
         )
@@ -120,6 +120,7 @@ class hungarian_SA_SDR(nn.Module):
 
 """
 @brief: calculates minimum SA_SDR over all possible pairs of audio
+make sure to negate if training
 """
 class factorial_SA_SDR(nn.Module): 
     def __init__(self, num_speakers: int, eps: float = 1e-8): 
@@ -138,7 +139,7 @@ class factorial_SA_SDR(nn.Module):
     ) -> torch.Tensor: 
         #compute loss over all permutations and take minimum
 
-        B = predicions.shape[0]
+        B = predictions.shape[0]
 
         #(B,)
         target_l2_squared = torch.sum(targets ** 2, dim=(1, 2))
@@ -149,15 +150,13 @@ class factorial_SA_SDR(nn.Module):
         )
 
         #calculate loss per permutation
-        for p in self.permutations: 
+        for i, p in enumerate(self.permutations): 
             #permute predictions 
             p_preds = predictions[:, p, :]
             #(B,)
-            pred_l2_squared = torch.sum(p_preds ** 2, dim = 1, 2)
-            loss = -10 * (target_log - torch.log10(pred_l2_squared))
-            perm_losses[:, i] = loss
+            diff_l2_squared = torch.sum((targets - p_preds) ** 2, dim = (1, 2))
+            loss = 10 * (target_log - torch.log10(diff_l2_squared + self.eps))
+            losses[:, i] = loss
 
-        min_loss, min_idx = torch.min(losses)
-        return min_loss.mean(dim=-1)
-
-
+        min_loss, min_idx = torch.min(losses, dim=1)
+        return min_loss.mean()

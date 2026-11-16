@@ -10,6 +10,7 @@ from torchmetrics.functional.audio import (
     scale_invariant_signal_distortion_ratio as si_sdr
 )
 from models.stft_modules import * 
+from models.losses import hungarian_SA_SDR, factorial_SA_SDR
 from scipy.optimize import linear_sum_assignment
 import numpy as np
 import os
@@ -79,6 +80,10 @@ class SpeechSeparationTrainer:
         self.loss_fn = loss_fn
         self.scheduler = lr_scheduler
         self.batch_scheduler = batch_scheduler
+
+        #sa_sdr
+        self.hungarian_SA_SDR = hungarian_SA_SDR()
+        self.factorial_SA_SDR = factorial_SA_SDR(num_speakers = num_speakers)
 
         self.train_loader = train_loader #load clips for training
         self.val_loader = val_loader #load clips for validation
@@ -296,6 +301,8 @@ class SpeechSeparationTrainer:
     def validate_epoch(self): 
         self.model.eval()
         loss_meter = AverageMeter()
+        hsa_sdr_meter = AverageMeter()
+        fsa_sdr_meter = AverageMeter()
 
         progress = tqdm(
             self.val_loader, 
@@ -322,10 +329,19 @@ class SpeechSeparationTrainer:
                         targets.unsqueeze(2), 
                         self.loss_fn, 
                         mode="speaker-wise", eval_func="min"
-                )
+                    )
+                    
+                    hungarian_sa_sdr = self.hungarian_SA_SDR(t_predictions, targets)
+                    factorial_sa_sdr = self.factorial_SA_SDR(t_predictions, targets)
 
             batch_loss = loss.mean().item()
             loss_meter.update(batch_loss)
+
+            #sdr
+            batch_hsa_sdr_loss = hungarian_sa_sdr.mean().item()
+            batch_fsa_sdr_loss = factorial_sa_sdr.mean().item()
+            hsa_sdr_meter.update(batch_hsa_sdr_loss)
+            fsa_sdr_meter.update(batch_fsa_sdr_loss)
 
             #track memory usage
             if self.device == "cuda":
@@ -335,6 +351,8 @@ class SpeechSeparationTrainer:
             progress.set_postfix(
                 loss=f"{batch_loss:.4f}", 
                 avg_loss=f"{loss_meter.avg:.4f}", 
+                avg_hsa_sdr=f"{hsa_sdr_meter.avg:.5f}",
+                avg_fsa_sdr=f"{fsa_sdr_meter.avg:.5f}",
                 cur_mem=f"{current_mem:.2f}GB", 
                 max_mem=f"{peak_mem:.2f}GB"
             )
@@ -343,6 +361,8 @@ class SpeechSeparationTrainer:
         metrics = {
             "val_avg_loss": loss_meter.avg, 
             "val_peak_mem": peak_mem, 
+            "avg_val_hsa_sdr": hsa_sdr_meter.avg, 
+            "avg_val_hsa_sdr": fsa_sdr_meter.avg, 
         }
 
         return metrics
@@ -353,7 +373,8 @@ class SpeechSeparationTrainer:
     ) -> dict[str, torch.Tensor]: 
         self.model.eval()
         mae_meter = AverageMeter()
-        si_sdr_meter = AverageMeter()
+        hsa_sdr_meter = AverageMeter()
+        fsa_sdr_meter = AverageMeter()
 
         progress = tqdm(
             self.inf_loader, 
@@ -386,17 +407,17 @@ class SpeechSeparationTrainer:
                         mode="speaker-wise", eval_func="min"
                     )
 
-                    si_sdr_loss, _ = pit(
-                        prediction, 
-                        targets, 
-                        si_sdr, 
-                        mode="speaker-wise", eval_func="max"
-                    )
+                    hungarian_sa_sdr = self.hungarian_SA_SDR(prediction, targets)
+                    factorial_sa_sdr = self.factorial_SA_SDR(prediction, targets)
 
             batch_mae_loss = mae_loss.mean().item()
-            batch_si_sdr_loss = si_sdr_loss.mean().item()
             mae_meter.update(batch_mae_loss)
-            si_sdr_meter.update(batch_si_sdr_loss)
+
+            #sdr metrics
+            batch_hsa_sdr_loss = hungarian_sa_sdr.mean().item()
+            batch_fsa_sdr_loss = factorial_sa_sdr.mean().item()
+            hsa_sdr_meter.update(batch_hsa_sdr_loss)
+            fsa_sdr_meter.update(batch_fsa_sdr_loss)
 
             #track memory usage
             if self.device == "cuda":
@@ -406,16 +427,19 @@ class SpeechSeparationTrainer:
             progress.set_postfix(
                 mae_loss=f"{batch_mae_loss:.4f}", 
                 avg_mae_loss=f"{mae_meter.avg:.4f}", 
-                si_sdr=f"{batch_si_sdr_loss:.4f}", 
-                avg_si_sdr=f"{si_sdr_meter.avg:.4f}", 
+                hsa_sdr=f"{batch_hsa_sdr_loss:.4f}", 
+                avg_hsa_sdr=f"{hsa_sdr_meter.avg:.4f}", 
+                fsa_sdr=f"{batch_fsa_sdr_loss:.4f}", 
+                avg_fsa_sdr=f"{fsa_sdr_meter.avg:.4f}", 
                 cur_mem=f"{current_mem:.2f}GB", 
-                max_mem=f"{peak_mem:.2f}GB"
+                max_mem=f"{peak_mem:.2f}GB",
             )
 
 
         metrics = {
             "avg_sep_mae_loss": mae_meter.avg, 
-            "avg_sep_si_sdr": si_sdr_meter.avg
+            "avg_hsa_sdr": hsa_sdr_meter.avg, 
+            "avg_fsa_sdr": fsa_sdr_meter.avg,
         }
 
         return metrics
@@ -462,7 +486,8 @@ class SpeechSeparationTrainer:
         model_save_path: str,  
         run_name: str, 
         resume: bool = False, 
-        model_load_path: Optional[str] = None
+        model_load_path: Optional[str] = None, 
+        full_val_steps: int = 4, 
     ) -> None: 
         #setup wandb
         if self.use_wandb: 
@@ -491,19 +516,19 @@ class SpeechSeparationTrainer:
             metrics_and_data.update(train_metrics)
             metrics_and_data.update(val_metrics)
 
-            if i % 5 == 0: 
+            if i % full_val_steps == 0: 
                 separation_metrics = self.validate_full_separations()
                 metrics_and_data.update(separation_metrics)
 
                 #higher is better
-                if not best_sdr or metrics_and_data['avg_sep_si_sdr'] > best_sdr: 
+                if not best_sdr or metrics_and_data['avg_hsa_sdr'] > best_sdr: 
                     self.save_model_state('best_sdr_model.pth', model_save_path) 
                     self.save_train_state(
                         model_save_path, 
                         'best_sdr_train_state.pth',
                         metrics_and_data, i
                     )
-                    best_sdr = metrics_and_data['avg_sep_si_sdr']
+                    best_sdr = metrics_and_data['avg_hsa_sdr']
 
             #lower is better
             if not best_val_loss or metrics_and_data['val_avg_loss'] < best_val_loss: 
