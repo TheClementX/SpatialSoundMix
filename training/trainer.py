@@ -14,6 +14,7 @@ from models.losses import hungarian_SA_SDR, factorial_SA_SDR
 from scipy.optimize import linear_sum_assignment
 import numpy as np
 import os
+import soundfile as sf
 from typing import * 
 import wandb
 
@@ -50,12 +51,14 @@ class SpeechSeparationTrainer:
         inf_hop_size: int, 
         grad_acum_steps: int,
         wandb_key: str, 
+        sample_rate: int = 44100, 
         mixed_precision: bool = True, 
         use_wandb: bool = True, 
         device: str = "cuda"
     ): 
         self.model = model
         self.num_speakers = num_speakers
+        self.sample_rate = sample_rate
 
         #setup stft layers for preparing model input 
         self.stft_parameters = stft_parameters
@@ -108,25 +111,50 @@ class SpeechSeparationTrainer:
         self.use_wandb = use_wandb
         self.device = device
 
-    def audio_to_spatial_net_in(self, mix: torch.Tensor) -> torch.Tensor: 
-        #(B, C, F, T, 2)
-        audio_spec = self.stft(mix) 
-        B, C, F, T, _ = audio_spec.shape
-        #(B, F, T, C, 2)
-        model_in = audio_spec.permute(0, 2, 3, 1, 4).contiguous()
-        #(B, F, T, C*2)
-        model_in = model_in.reshape((B, F, T, C*2))
-        return model_in
+    """
+    @breif repermutes and scales input to spatialnet
+    @return 
+        model_in: (B, F, T, C*2)
+        scale: (B, 1, F, 1) the scale to multiply when transforming model_out
+    """
+    def audio_to_spatial_net_in(
+        self, 
+        mix: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        #scale audio 
+        c_spec = torch.view_as_complex(self.stft(mix)) #(B, C, F, T)
+        scale = c_spec.abs().mean(dim=(1,3), keepdim=True) #(B, 1, F, 1)
+        scale = scale.clamp_min(1e-5) #make sure near silent bins are handled
+        c_spec = c_spec / scale
 
-    def spatial_net_out_to_audio(self, model_out: torch.Tensor, length: int) -> torch.Tensor: 
+        r_spec = torch.view_as_real(c_spec)
+        B, C, F, T, _ = r_spec.shape
+        model_in = r_spec.permute(0, 2, 3, 1, 4).contiguous() #(B, F, T, C, 2)
+        model_in = model_in.reshape((B, F, T, C*2)) #(B, F, T, C*2)
+        return model_in, scale
+
+    """
+    @param: 
+        model_out: (B, F, T, 2*num_speakers)
+        scale: (B, 1, F, 1)
+    """
+    def spatial_net_out_to_audio(
+        self, 
+        model_out: torch.Tensor, 
+        length: int, 
+        scale: torch.Tensor, 
+    ) -> torch.Tensor: 
+        #unscale audio
+
         B, F, T, _ = model_out.shape
         model_out = model_out.float()
         #(B, F, T, 2*num_speakers)
         model_out = model_out.reshape((B, F, T, -1, 2))
         #(B, num_speakers, F, T, 2)
         model_out = model_out.permute(0, 3, 1, 2, 4).contiguous()
+        c_model_out = torch.view_as_complex(model_out) * scale
         #(B, num_speakers, samples)
-        pred_audio = self.istft(model_out, length)
+        pred_audio = self.istft(torch.view_as_real(c_model_out), length)
         return pred_audio
 
     """
@@ -164,9 +192,9 @@ class SpeechSeparationTrainer:
         for i, chunk in enumerate(audio_chunks): 
             #predict spectrograms must reshape for input to SpatialNet
             istft_length = chunk.shape[-1]
-            model_in = self.audio_to_spatial_net_in(chunk)
+            model_in, scale = self.audio_to_spatial_net_in(chunk)
             pred_spectrograms = self.model(model_in)
-            pred_audio = self.spatial_net_out_to_audio(pred_spectrograms, istft_length)
+            pred_audio = self.spatial_net_out_to_audio(pred_spectrograms, istft_length, scale)
 
             #match audio with hungarian if not the first iteration
             start_idx = i * hop_size
@@ -226,11 +254,11 @@ class SpeechSeparationTrainer:
             mix, targets = mix.to(self.device), targets.to(self.device)
             istft_length = mix.shape[-1]
 
-            model_in = self.audio_to_spatial_net_in(mix)
+            model_in, scale = self.audio_to_spatial_net_in(mix)
             with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):
                 tf_predictions = self.model(model_in)
                 #reshape
-                t_predictions = self.spatial_net_out_to_audio(tf_predictions, istft_length)
+                t_predictions = self.spatial_net_out_to_audio(tf_predictions, istft_length, scale)
 
                 loss, _ = pit(
                     t_predictions.unsqueeze(2), 
@@ -318,11 +346,11 @@ class SpeechSeparationTrainer:
             mix, targets = mix.to(self.device), targets.to(self.device)
             istft_length = mix.shape[-1]
 
-            model_in = self.audio_to_spatial_net_in(mix)
+            model_in, scale = self.audio_to_spatial_net_in(mix)
             with torch.amp.autocast(device_type=self.device):
                 with torch.inference_mode(): 
                     tf_predictions = self.model(model_in)
-                    t_predictions = self.spatial_net_out_to_audio(tf_predictions, istft_length)
+                    t_predictions = self.spatial_net_out_to_audio(tf_predictions, istft_length, scale)
 
                     loss, _ = pit(
                         t_predictions.unsqueeze(2), 
@@ -367,9 +395,30 @@ class SpeechSeparationTrainer:
 
         return metrics
 
+    """
+    @params: 
+        s: (num_speakers, T)
+    """
+    def write_separations(
+        self, 
+        source: torch.Tensor, 
+        write_path: str, 
+    ) -> None: 
+        speakers = torch.unbind(source, dim=0)
+
+        for i, speaker in enumerate(speakers): 
+            f_name = f"speaker_{i}.wav"
+            path = os.path.join(write_path, f_name)
+            speaker = speaker.detach().cpu().numpy()
+
+            sf.write(path, speaker, self.sample_rate)
+
+
     #used only to validate full separations
     def validate_full_separations(
-        self
+        self, 
+        write_separations: bool = False, 
+        separations_write_path: str = "", 
     ) -> dict[str, torch.Tensor]: 
         self.model.eval()
         mae_meter = AverageMeter()
@@ -385,7 +434,7 @@ class SpeechSeparationTrainer:
 
         current_mem = 0
         peak_mem = 0
-        for example in progress: 
+        for i, example in enumerate(progress): 
             #full recording pairs
             mix, targets = example
             mix, targets = mix.to(self.device), targets.to(self.device)
@@ -399,6 +448,12 @@ class SpeechSeparationTrainer:
                         chunk_size=self.inf_chunk_size, 
                         hop_size=self.inf_hop_size
                     )
+
+                    if write_separations: 
+                        for j in range(prediction.shape[0]): 
+                            write_path = os.path.join(separations_write_path, f"example_{i}")
+                            os.makedirs(write_path, exist_ok=True)
+                            self.write_separations(prediction[j], write_path)
 
                     mae_loss, _ = pit(
                         prediction.unsqueeze(2), 

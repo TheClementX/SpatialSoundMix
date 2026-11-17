@@ -146,10 +146,14 @@ class SpatialSoundMixInferenceDataset(Dataset):
     def __init__(
         self, 
         data_root: str, 
-        num_speakers: int
+        num_speakers: int,
+        sample_rate: int = 44100, 
+        d_sample_rate: int = 44100, 
     ) -> None: 
         self.data_root = data_root
         self.num_speakers = num_speakers
+        self.sample_rate = sample_rate 
+        self.d_sample_rate = d_sample_rate
 
         self.scene_paths = [
             os.path.join(self.data_root, sp) for sp in os.listdir(self.data_root)
@@ -161,6 +165,7 @@ class SpatialSoundMixInferenceDataset(Dataset):
                 [os.path.join(sp, instance )for instance in os.listdir(sp)]
             )
         self.instance_paths = sorted(self.instance_paths)
+        self.resampler = T.Resample(orig_freq=sample_rate, new_freq=d_sample_rate)
 
     def __len__(self) -> int: 
         return len(self.instance_paths)
@@ -184,5 +189,10 @@ class SpatialSoundMixInferenceDataset(Dataset):
         for _ in range(num_silent): 
             sources.append(torch.zeros(len(sources[0])))
         sources = torch.stack(sources, dim=0)
+
+        #downsample
+        if self.d_sample_rate != self.sample_rate: 
+            mix_audio = self.resampler(mix_audio)
+            sources = self.resampler(sources) 
 
         return mix_audio, sources

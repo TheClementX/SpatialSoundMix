@@ -1,20 +1,17 @@
 Todo: 
-	-> oaa for speaker invariant models
-	-> validation loops
-	-> inference loader
-	-> trianing script 
-	-> assert training runs
-	-> other dataloaders
-	-> Tf-Gridnet
-	-> Ablations
-	-> RedNet
+	-> fix pit loss : done
+	-> fix scaling : done
+	-> fix dataloader scaling : done
+	-> remove silent window : done 
+	-> add direct path and full reverb to targets : 
+	-> regenerate data : 
+	-> match validation sample rates : done
+	-> retrain : 
 
-In-Order: 
-	-> losses and PIT
-	-> training functionality
-	-> validation functionality
-		-> overlap add and average for inference
-
+	-> build sms-wsj dataset : 
+	-> build sms-wsj dataloaders : 
+	-> retrain spatial net on sms-wsj :
+	
 API-keys
 	token-secret : e0d4dbfcc297bad4de7611be699d8a5b
 	token-id : dce18cce81daa48b

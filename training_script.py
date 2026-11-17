@@ -38,14 +38,13 @@ config = {
     "clip_length": 4, 
     "random_slices": True, 
     "sample_rate": 44100, 
+    'd_sample_rate': 16000, 
 
     #training
     'lr': 1e-3, 
     'batch_size_train': 4, 
     'batch_size_val': 2, 
     'batch_size_inf': 1,
-    'sample_rate': 44100,
-    'd_sample_rate': 16000, 
     'epochs': 100, 
     'warmup_epochs': None, 
     'grad_acum': True, 
@@ -67,13 +66,18 @@ config = {
 
     #wandb
     'wandb_key': "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", 
-    'use_wandb': True, 
+    'use_wandb': False, 
 
     #saving
     'model_save_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints", 
     'run_name': "ablation:4:16khz-rog-sa_sdr",
     'resume': False, 
-    'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth"
+    'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth", 
+    
+    #set testing mode for only running inference
+    'test': False, 
+    'test_write_path': "/home/clem3nti/projects/SpatialSoundMix/test_audio", 
+    'test_model_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth",
 }
 
 def train(config): 
@@ -108,12 +112,15 @@ def train(config):
         config['num_speakers'], 
         clip_length=config['clip_length'], 
         random_slices=config['random_slices'], 
-        sample_rate = config['sample_rate'] 
+        sample_rate = config['sample_rate'], 
+        d_sample_rate=config['d_sample_rate'],
     )
 
     inf_dataset = SpatialSoundMixInferenceDataset(
         config['test_root'], 
-        config['num_speakers']
+        config['num_speakers'], 
+        sample_rate = config['sample_rate'], 
+        d_sample_rate=config['d_sample_rate'],
     )
     print("datasets loaded")
 
@@ -157,22 +164,31 @@ def train(config):
         train_loader, val_loader, inf_loader, 
         config['inf_chunksize'], config['inf_hopsize'], 
         config['grad_acum_steps'], config['wandb_key'], 
+        sample_rate = config['d_sample_rate'], 
         mixed_precision=config['mixed_precision'], 
         use_wandb=config['use_wandb'], 
         device=config['device'],
     )
 
-    print("trainer initialized beginning training")
+    if config['test']: 
+        print("running test separations")
+        trainer.load_train_state(config['test_model_path'])
+        trainer.validate_full_separations(
+            write_separations=True, 
+            separations_write_path=config["test_write_path"]
+        )
 
-    trainer.train(
-        config['epochs'], 
-        config, 
-        config['model_save_path'], 
-        config['run_name'],
-        resume = config['resume'], 
-        model_load_path = config['model_load_path'], 
-        full_val_steps = config['full_val_steps'], 
-    )
+    else: 
+        print("trainer initialized beginning training")
+        trainer.train(
+            config['epochs'], 
+            config, 
+            config['model_save_path'], 
+            config['run_name'],
+            resume = config['resume'], 
+            model_load_path = config['model_load_path'], 
+            full_val_steps = config['full_val_steps'], 
+        )
 
 if __name__ == "__main__": 
     train(config)

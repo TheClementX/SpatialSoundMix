@@ -8,6 +8,9 @@ from .stft_modules import *
 import itertools
 from scipy.optimize import linear_sum_assignment
 
+"""
+@brief edited to be per batch for PIT
+"""
 class MAELoss(nn.Module): 
     def __init__(
         self, 
@@ -64,8 +67,10 @@ class MAELoss(nn.Module):
         spec_loss = torch.stack(spec_loss, dim=0)
         l2_spectrogram = spec_loss.sum(dim=0).view(-1)
 
+        #now a per batch loss
+        B = predicted_audio.shape[0]
         loss = l2_wavform + l2_spectrogram
-        return loss.mean()
+        return loss.view(B, -1).mean(dim=1)
 
 """
 @brief: realigns predictions to match targets based on similarity 
