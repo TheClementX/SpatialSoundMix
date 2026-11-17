@@ -1,48 +1,83 @@
 """
-build_dataset_script.py
+build_dataset_script_cl.py
 
+Builds the static SpatialSoundMix dataset. Edit the settings below and run:
+    python build_dataset_script_cl.py
 """
 
-from static_dataset_builder_cl import *
-import os 
+import os
+from static_dataset_builder_cl import SpatialSoundMixDatasetBuilder
 
-#testing paths and configuration
-data_base_dir = "/home/clem3nti/projects/SpatialSoundMix/data/ears_dataset"
-DATA_DIRS = [os.path.join(data_base_dir, dir) for dir in os.listdir(data_base_dir)]
+"""
+DATA PATH VARIABLES ============================================= 
+"""
+DATA_BASE_DIR = "/home/clem3nti/projects/SpatialSoundMix/data/ears_dataset"
+DATA_DIRS = [os.path.join(DATA_BASE_DIR, d) for d in sorted(os.listdir(DATA_BASE_DIR))]
 MESH_DIRS = ["/home/clem3nti/projects/SpatialSoundMix/data/hm3d_default/versioned_data/hm3d-0.2/hm3d/train"]
 DATA_WRITE_PATH = "/home/clem3nti/projects/SpatialSoundMix/r_data"
-STEP_DURATION = 0.2
-SAMPLE_RATE = 44100.0
-SEED = 42
-
 AUDIO_ABSORPTION_FILE = "/home/clem3nti/projects/SpatialSoundMix/data/mp3d_material_config.json"
 DATASET_CONFIG_FILE = "/home/clem3nti/projects/SpatialSoundMix/data/hm3d_default/versioned_data/hm3d-0.2/hm3d/hm3d_annotated_basis.scene_dataset_config.json"
+"""
+DATA PATH VARIABLES ============================================= 
+"""
 
-#dataset_builder parameters
-NUM_STATES_PER_SCENE = 10
+"""
+SIMULATION VARIABLES ============================================= 
+"""
+SAMPLE_RATE = 44100.0
+SEED = 42
+RLR_THREADS = 4 #numper of cpu threads
+"""
+SIMULATION VARIABLES ============================================= 
+"""
+
+"""
+DATA ATTRIBUTE VARIABLES ============================================= 
+"""
+NUM_STATES_PER_SCENE = 10 #number of instances generated
+NUM_SOURCES_RANGE = (2, 4) #number of sources in mix
+MAX_DISTANCE = 10.0 #max speaker distance
+MAX_LEVEL_DIFF_DB = 6.0 # db difference between loudest speaker and everyother speaker
+
 RETURN_SOURCES = True
-MAX_MIN_SENSORS = (2, 4)
-MAX_DISTANCE = 10.0
-#no speaker is left more than this many dB below the loudest one in a mix
-MAX_LEVEL_DIFF_DB = 6.0
-#CPU threads for habitat-sim's ray tracer; scenes run one at a time, so this is the
-#build's main CPU budget (raise it to go faster, lower it to leave cores free)
-RLR_THREADS = 4
+#how the source is generated
+#   "dry"    the clean recording, at the level it was recorded at
+#   "direct" the recording convolved with the direct path of its RIR (no reverb), at
+#            the mix's scale
+#   "full"   the recording convolved with its full RIR (reverberant), at the mix's
+#            scale; the full targets of a mix sum to the mix
+SOURCE_TYPE = "dry"
+#True: targets are binaural, 2 channels (left / right ear) like the mix; a dry
+#target is the same signal in both channels.
+#False: targets are mono, 1 channel, taken as MONO_CHANNEL says.
+BINAURAL_SOURCES = False
+#with BINAURAL_SOURCES False, what a mono direct / full target is:
+#   "left"    the left ear
+#   "right"   the right ear
+#   "average" the average of both ears
+#a dry target is the mono recording whatever this is set to
+MONO_CHANNEL = "left"
 
-def main(): 
-    dataset_builder = SpatialSoundMixDatasetBuilder(
-        DATA_DIRS, MESH_DIRS, 
-        AUDIO_ABSORPTION_FILE, 
-        DATASET_CONFIG_FILE, 
-        STEP_DURATION, SAMPLE_RATE, SEED,
+"""
+DATA ATTRIBUTE VARIABLES ============================================= 
+"""
+
+def main():
+    builder = SpatialSoundMixDatasetBuilder(
+        DATA_DIRS, MESH_DIRS, AUDIO_ABSORPTION_FILE, DATASET_CONFIG_FILE,
+        sample_rate=SAMPLE_RATE,
+        seed=SEED,
+        source_type=SOURCE_TYPE,
+        binaural_sources=BINAURAL_SOURCES,
+        mono_channel=MONO_CHANNEL,
         max_level_diff_db=MAX_LEVEL_DIFF_DB,
-        rlr_threads=RLR_THREADS
+        rlr_threads=RLR_THREADS,
     )
-    dataset_builder.build_dataset(
-        NUM_STATES_PER_SCENE, MAX_MIN_SENSORS, DATA_WRITE_PATH, 
-        RETURN_SOURCES, STEP_DURATION, "glb", MAX_DISTANCE
+    builder.build_dataset(
+        NUM_STATES_PER_SCENE, NUM_SOURCES_RANGE, DATA_WRITE_PATH,
+        return_sources=RETURN_SOURCES,
+        max_distance=MAX_DISTANCE,
     )
 
-#the guard is required: each scene runs in a spawned process that re-imports this file
-if __name__ == "__main__": 
+if __name__ == "__main__":
     main()
