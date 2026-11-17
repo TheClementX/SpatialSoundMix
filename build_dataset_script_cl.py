@@ -15,7 +15,6 @@ STEP_DURATION = 0.2
 SAMPLE_RATE = 44100.0
 SEED = 42
 
-#TODO set these file paths
 AUDIO_ABSORPTION_FILE = "/home/clem3nti/projects/SpatialSoundMix/data/mp3d_material_config.json"
 DATASET_CONFIG_FILE = "/home/clem3nti/projects/SpatialSoundMix/data/hm3d_default/versioned_data/hm3d-0.2/hm3d/hm3d_annotated_basis.scene_dataset_config.json"
 

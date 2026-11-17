@@ -871,7 +871,7 @@ class SpatialSoundMixDatasetBuilder:
         self, 
         raw_audio_paths: list[str],
         step_duration: float = 0.2, 
-        additional_seconds: float = 10.0
+        additional_seconds: float = 0.5, 
     ) -> AudioSequence: 
         cues, source_max_samples = [], 0
         sample_rate = None
@@ -1085,7 +1085,8 @@ class SpatialSoundMixDatasetBuilder:
             #postpend silence
             post_silence_len = audio_sequence.max_samples - len(p_audio)
             post_silence = np.zeros(post_silence_len)
-            pre_post_audio = np.concatenate([p_audio, post_silence], axis=0)
+            #scalel by amp_max just like mix audio
+            pre_post_audio = np.concatenate([p_audio, post_silence], axis=0) / amp_max
             sources.append(pre_post_audio)
 
         return {
