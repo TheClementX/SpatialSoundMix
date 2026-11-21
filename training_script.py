@@ -1,5 +1,5 @@
 #local imports
-from models.losses import MAELoss
+from models.losses import MAELoss, factorial_SA_SDR
 from models.spatialnet.SpatialNet import * 
 from training.datasets import *
 from training.trainer import SpeechSeparationTrainer
@@ -17,7 +17,7 @@ srun --account=bjor-delta-gpu --partition=gpuA100x4-interactive --nodes=1 --ntas
 config = {
     "device": "cuda" if torch.cuda.is_available() else "cpu", 
     #model 
-    'num_speakers': 4, 
+    'num_speakers': 2,  
     'num_mics': 2, 
     'dim_squeeze': 8, 
     'num_layers': 8, 
@@ -45,14 +45,14 @@ config = {
     'batch_size_train': 4, 
     'batch_size_val': 2, 
     'batch_size_inf': 1,
-    'epochs': 100, 
+    'epochs': 10000, 
     'warmup_epochs': None, 
     'grad_acum': True, 
-    'grad_acum_steps': 8, 
+    'grad_acum_steps': 1, 
     'mixed_precision': True, 
     'batch_scheduler': False, 
     'checkpointing': True, 
-    'full_val_steps': 4, 
+    'full_val_steps': 10, 
 
     #dataloaders
     'num_workers': 8, 
@@ -61,16 +61,16 @@ config = {
     'prefetch_factor': 4,
 
     #inference
-    "inf_chunksize": 441000, 
-    "inf_hopsize": 220500, 
+    "inf_chunksize": 64000, 
+    "inf_hopsize": 32000, 
 
     #wandb
     'wandb_key': "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", 
-    'use_wandb': False, 
+    'use_wandb': True, 
+    'run_name': "ablation:sa_sdr_full_run_spatial_net",
 
     #saving
     'model_save_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints", 
-    'run_name': "ablation:4:16khz-rog-sa_sdr",
     'resume': False, 
     'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth", 
     
@@ -92,7 +92,8 @@ def train(config):
     ).to(config['device'])
     print("model initialized")
 
-    loss = MAELoss() #using defaults
+    # loss = MAELoss() #using defaults
+    loss = factorial_SA_SDR(config['num_speakers'])
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'])
     lr_scheduler = lr.CosineAnnealingLR(optimizer, config['epochs'])
 

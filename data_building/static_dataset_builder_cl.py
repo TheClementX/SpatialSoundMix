@@ -272,6 +272,7 @@ class SpatialSoundMixDatasetBuilder:
         backend_cfg.use_semantic_textures = False
         backend_cfg.enable_physics = True
         backend_cfg.random_seed = seed
+        backend_cfg.gpu_device_id = -1
 
         acoustics_cfg = habitat_sim.RLRAudioPropagationConfiguration()
         acoustics_cfg.enableMaterials = True

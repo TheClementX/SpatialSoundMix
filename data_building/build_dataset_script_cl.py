@@ -34,10 +34,10 @@ SIMULATION VARIABLES =============================================
 """
 DATA ATTRIBUTE VARIABLES ============================================= 
 """
-NUM_STATES_PER_SCENE = 10 #number of instances generated
-NUM_SOURCES_RANGE = (2, 4) #number of sources in mix
-MAX_DISTANCE = 10.0 #max speaker distance
-MAX_LEVEL_DIFF_DB = 6.0 # db difference between loudest speaker and everyother speaker
+NUM_STATES_PER_SCENE = 30 #number of instances generated
+NUM_SOURCES_RANGE = (2, 2) #number of sources in mix
+MAX_DISTANCE = 5.0 #max speaker distance
+MAX_LEVEL_DIFF_DB = 4.0 # db difference between loudest speaker and everyother speaker
 
 RETURN_SOURCES = True
 #how the source is generated
@@ -46,7 +46,7 @@ RETURN_SOURCES = True
 #            the mix's scale
 #   "full"   the recording convolved with its full RIR (reverberant), at the mix's
 #            scale; the full targets of a mix sum to the mix
-SOURCE_TYPE = "dry"
+SOURCE_TYPE = "full"
 #True: targets are binaural, 2 channels (left / right ear) like the mix; a dry
 #target is the same signal in both channels.
 #False: targets are mono, 1 channel, taken as MONO_CHANNEL says.

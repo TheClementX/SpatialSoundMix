@@ -158,8 +158,6 @@ class SpeechSeparationTrainer:
         return pred_audio
 
     """
-    need to reimplement overlap add average with STF windows 
-
     @param: 
         mix_audio: (B, chan, samples)
     @return
@@ -260,13 +258,7 @@ class SpeechSeparationTrainer:
                 #reshape
                 t_predictions = self.spatial_net_out_to_audio(tf_predictions, istft_length, scale)
 
-                loss, _ = pit(
-                    t_predictions.unsqueeze(2), 
-                    targets.unsqueeze(2), 
-                    self.loss_fn, 
-                    mode="speaker-wise", eval_func="min"
-                )
-                loss = loss.mean()
+                loss = self.loss_fn(t_predictions, targets)
 
                 if self.grad_acum: 
                     loss /= self.grad_acum_steps
@@ -351,19 +343,9 @@ class SpeechSeparationTrainer:
                 with torch.inference_mode(): 
                     tf_predictions = self.model(model_in)
                     t_predictions = self.spatial_net_out_to_audio(tf_predictions, istft_length, scale)
-
-                    loss, _ = pit(
-                        t_predictions.unsqueeze(2), 
-                        targets.unsqueeze(2), 
-                        self.loss_fn, 
-                        mode="speaker-wise", eval_func="min"
-                    )
                     
                     hungarian_sa_sdr = self.hungarian_SA_SDR(t_predictions, targets)
                     factorial_sa_sdr = self.factorial_SA_SDR(t_predictions, targets)
-
-            batch_loss = loss.mean().item()
-            loss_meter.update(batch_loss)
 
             #sdr
             batch_hsa_sdr_loss = hungarian_sa_sdr.mean().item()
@@ -377,8 +359,6 @@ class SpeechSeparationTrainer:
                 peak_mem = torch.cuda.max_memory_allocated() / (1024 ** 3)
 
             progress.set_postfix(
-                loss=f"{batch_loss:.4f}", 
-                avg_loss=f"{loss_meter.avg:.4f}", 
                 avg_hsa_sdr=f"{hsa_sdr_meter.avg:.5f}",
                 avg_fsa_sdr=f"{fsa_sdr_meter.avg:.5f}",
                 cur_mem=f"{current_mem:.2f}GB", 
@@ -387,7 +367,7 @@ class SpeechSeparationTrainer:
 
 
         metrics = {
-            "val_avg_loss": loss_meter.avg, 
+            # "val_avg_loss": loss_meter.avg, 
             "val_peak_mem": peak_mem, 
             "avg_val_hsa_sdr": hsa_sdr_meter.avg, 
             "avg_val_hsa_sdr": fsa_sdr_meter.avg, 
@@ -455,18 +435,8 @@ class SpeechSeparationTrainer:
                             os.makedirs(write_path, exist_ok=True)
                             self.write_separations(prediction[j], write_path)
 
-                    mae_loss, _ = pit(
-                        prediction.unsqueeze(2), 
-                        targets.unsqueeze(2), 
-                        self.loss_fn, 
-                        mode="speaker-wise", eval_func="min"
-                    )
-
                     hungarian_sa_sdr = self.hungarian_SA_SDR(prediction, targets)
                     factorial_sa_sdr = self.factorial_SA_SDR(prediction, targets)
-
-            batch_mae_loss = mae_loss.mean().item()
-            mae_meter.update(batch_mae_loss)
 
             #sdr metrics
             batch_hsa_sdr_loss = hungarian_sa_sdr.mean().item()
@@ -480,8 +450,6 @@ class SpeechSeparationTrainer:
                 peak_mem = torch.cuda.max_memory_allocated() / (1024 ** 3)
 
             progress.set_postfix(
-                mae_loss=f"{batch_mae_loss:.4f}", 
-                avg_mae_loss=f"{mae_meter.avg:.4f}", 
                 hsa_sdr=f"{batch_hsa_sdr_loss:.4f}", 
                 avg_hsa_sdr=f"{hsa_sdr_meter.avg:.4f}", 
                 fsa_sdr=f"{batch_fsa_sdr_loss:.4f}", 
@@ -492,7 +460,6 @@ class SpeechSeparationTrainer:
 
 
         metrics = {
-            "avg_sep_mae_loss": mae_meter.avg, 
             "avg_hsa_sdr": hsa_sdr_meter.avg, 
             "avg_fsa_sdr": fsa_sdr_meter.avg,
         }
@@ -585,15 +552,15 @@ class SpeechSeparationTrainer:
                     )
                     best_sdr = metrics_and_data['avg_hsa_sdr']
 
-            #lower is better
-            if not best_val_loss or metrics_and_data['val_avg_loss'] < best_val_loss: 
+            lower is better
+            if not best_val_loss or metrics_and_data['avg_fsa_sdr'] < best_val_loss: 
                 self.save_model_state('best_val_loss_model.pth', model_save_path) 
                 self.save_train_state(
                     model_save_path, 
                     'best_val_loss_train_state.pth',
                     metrics_and_data, i
                 )
-                best_val_loss = metrics_and_data['val_avg_loss']
+                # best_val_loss = metrics_and_data['val_avg_loss']
 
             #save checkpoint
             self.save_train_state(

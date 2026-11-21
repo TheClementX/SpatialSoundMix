@@ -160,8 +160,8 @@ class factorial_SA_SDR(nn.Module):
             p_preds = predictions[:, p, :]
             #(B,)
             diff_l2_squared = torch.sum((targets - p_preds) ** 2, dim = (1, 2))
-            loss = 10 * (target_log - torch.log10(diff_l2_squared + self.eps))
+            loss = -10 * (target_log - torch.log10(diff_l2_squared + self.eps))
             losses[:, i] = loss
 
-        min_loss, min_idx = torch.min(losses, dim=1)
-        return min_loss.mean()
+        max_loss, min_idx = torch.min(losses, dim=1)
+        return max_loss.mean()
