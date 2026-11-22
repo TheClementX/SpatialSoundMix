@@ -207,7 +207,7 @@ class SpeechSeparationTrainer:
                 sim_scores = suffix_window @ prefix_window.permute(0, 2, 1)
                 sim_scores = -1 * sim_scores 
 
-                sim_scores = sim_scores.detach().cpu().numpy()
+                sim_scores = sim_scores.detach().float().cpu().numpy()
                 hungarian_aligned_audio = torch.empty_like(pred_audio)
                 for b in range(B): 
                     row_ind, col_ind = linear_sum_assignment(sim_scores[b])
@@ -339,7 +339,7 @@ class SpeechSeparationTrainer:
             istft_length = mix.shape[-1]
 
             model_in, scale = self.audio_to_spatial_net_in(mix)
-            with torch.amp.autocast(device_type=self.device):
+            with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):
                 with torch.inference_mode(): 
                     tf_predictions = self.model(model_in)
                     t_predictions = self.spatial_net_out_to_audio(tf_predictions, istft_length, scale)
@@ -360,7 +360,7 @@ class SpeechSeparationTrainer:
 
             progress.set_postfix(
                 avg_hsa_sdr=f"{hsa_sdr_meter.avg:.5f}",
-                avg_fsa_sdr=f"{fsa_sdr_meter.avg:.5f}",
+                avg_fsa_sdr=f"{-fsa_sdr_meter.avg:.5f}",
                 cur_mem=f"{current_mem:.2f}GB", 
                 max_mem=f"{peak_mem:.2f}GB"
             )
@@ -370,7 +370,7 @@ class SpeechSeparationTrainer:
             # "val_avg_loss": loss_meter.avg, 
             "val_peak_mem": peak_mem, 
             "avg_val_hsa_sdr": hsa_sdr_meter.avg, 
-            "avg_val_hsa_sdr": fsa_sdr_meter.avg, 
+            "avg_val_fsa_sdr": -fsa_sdr_meter.avg, 
         }
 
         return metrics
@@ -420,7 +420,7 @@ class SpeechSeparationTrainer:
             mix, targets = mix.to(self.device), targets.to(self.device)
 
             #mixed precision calculate loss
-            with torch.amp.autocast(device_type=self.device):
+            with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):
                 with torch.inference_mode(): 
                     #(B, num_speakers, len)
                     prediction = self.multi_speaker_overlap_add_average(
@@ -453,7 +453,7 @@ class SpeechSeparationTrainer:
                 hsa_sdr=f"{batch_hsa_sdr_loss:.4f}", 
                 avg_hsa_sdr=f"{hsa_sdr_meter.avg:.4f}", 
                 fsa_sdr=f"{batch_fsa_sdr_loss:.4f}", 
-                avg_fsa_sdr=f"{fsa_sdr_meter.avg:.4f}", 
+                avg_fsa_sdr=f"{-fsa_sdr_meter.avg:.4f}", 
                 cur_mem=f"{current_mem:.2f}GB", 
                 max_mem=f"{peak_mem:.2f}GB",
             )
@@ -461,7 +461,7 @@ class SpeechSeparationTrainer:
 
         metrics = {
             "avg_hsa_sdr": hsa_sdr_meter.avg, 
-            "avg_fsa_sdr": fsa_sdr_meter.avg,
+            "avg_fsa_sdr": -fsa_sdr_meter.avg,
         }
 
         return metrics
@@ -524,6 +524,7 @@ class SpeechSeparationTrainer:
 
         if resume: 
             epoch, _ = self.load_train_state(model_load_path)
+            epoch += 1
         else: 
             epoch = 0
 
@@ -543,7 +544,7 @@ class SpeechSeparationTrainer:
                 metrics_and_data.update(separation_metrics)
 
                 #higher is better
-                if not best_sdr or metrics_and_data['avg_hsa_sdr'] > best_sdr: 
+                if best_sdr is None or metrics_and_data['avg_hsa_sdr'] > best_sdr: 
                     self.save_model_state('best_sdr_model.pth', model_save_path) 
                     self.save_train_state(
                         model_save_path, 
@@ -552,15 +553,15 @@ class SpeechSeparationTrainer:
                     )
                     best_sdr = metrics_and_data['avg_hsa_sdr']
 
-            lower is better
-            if not best_val_loss or metrics_and_data['avg_fsa_sdr'] < best_val_loss: 
+            # higher is better
+            if best_val_loss is None or metrics_and_data['avg_val_fsa_sdr'] > best_val_loss: 
                 self.save_model_state('best_val_loss_model.pth', model_save_path) 
                 self.save_train_state(
                     model_save_path, 
                     'best_val_loss_train_state.pth',
                     metrics_and_data, i
                 )
-                # best_val_loss = metrics_and_data['val_avg_loss']
+                best_val_loss = metrics_and_data['avg_val_fsa_sdr']
 
             #save checkpoint
             self.save_train_state(

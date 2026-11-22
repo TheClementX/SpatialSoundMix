@@ -41,18 +41,23 @@ config = {
     'd_sample_rate': 16000, 
 
     #training
-    'lr': 1e-3, 
+    'lr': 5e-4, 
     'batch_size_train': 4, 
     'batch_size_val': 2, 
     'batch_size_inf': 1,
-    'epochs': 10000, 
+    'epochs': 40, 
     'warmup_epochs': None, 
     'grad_acum': True, 
     'grad_acum_steps': 1, 
     'mixed_precision': True, 
-    'batch_scheduler': False, 
+    'batch_scheduler': True, 
     'checkpointing': True, 
     'full_val_steps': 10, 
+
+    #lr scheduler
+    'pct_start': 0.05, 
+    'div_factor': 25, 
+    'final_div_factor': 1e3, 
 
     #dataloaders
     'num_workers': 8, 
@@ -72,7 +77,7 @@ config = {
     #saving
     'model_save_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints", 
     'resume': False, 
-    'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth", 
+    'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/best_val_loss_train_state.pth", 
     
     #set testing mode for only running inference
     'test': False, 
@@ -92,10 +97,6 @@ def train(config):
     ).to(config['device'])
     print("model initialized")
 
-    # loss = MAELoss() #using defaults
-    loss = factorial_SA_SDR(config['num_speakers'])
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'])
-    lr_scheduler = lr.CosineAnnealingLR(optimizer, config['epochs'])
 
     print("training functions initialized")
 
@@ -112,7 +113,7 @@ def train(config):
         config['val_root'], 
         config['num_speakers'], 
         clip_length=config['clip_length'], 
-        random_slices=config['random_slices'], 
+        random_slices=False, 
         sample_rate = config['sample_rate'], 
         d_sample_rate=config['d_sample_rate'],
     )
@@ -156,6 +157,19 @@ def train(config):
     )
 
     print("dataloaders initialized")
+
+    loss = factorial_SA_SDR(config['num_speakers'])
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'])
+    # lr_scheduler = lr.CosineAnnealingLR(optimizer, config['epochs'])
+    total_steps = config['epochs'] * len(train_loader) // config['grad_acum_steps']
+    lr_scheduler = lr.OneCycleLR(
+        optimizer, 
+        max_lr=config['lr'], 
+        total_steps=total_steps, 
+        pct_start=config['pct_start'], 
+        div_factor=config['div_factor'],
+        final_div_factor=config['final_div_factor'], 
+    )
 
 
     trainer = SpeechSeparationTrainer(

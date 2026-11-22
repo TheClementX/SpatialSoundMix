@@ -11,7 +11,7 @@ from static_dataset_builder_cl import SpatialSoundMixDatasetBuilder
 """
 DATA PATH VARIABLES ============================================= 
 """
-DATA_BASE_DIR = "/home/clem3nti/projects/SpatialSoundMix/data/ears_dataset"
+DATA_BASE_DIR = "/home/clem3nti/projects/SpatialSoundMix/data/ears_dataset_clean"
 DATA_DIRS = [os.path.join(DATA_BASE_DIR, d) for d in sorted(os.listdir(DATA_BASE_DIR))]
 MESH_DIRS = ["/home/clem3nti/projects/SpatialSoundMix/data/hm3d_default/versioned_data/hm3d-0.2/hm3d/train"]
 DATA_WRITE_PATH = "/home/clem3nti/projects/SpatialSoundMix/r_data"

@@ -97,7 +97,7 @@ class hungarian_SA_SDR(nn.Module):
         u_predictions = predictions.unsqueeze(1) #(B, 1, C, T)
         u_targets = targets.unsqueeze(2) #(B, C, 1, T)
         cost_matrix = torch.abs(u_targets - u_predictions).mean(dim=-1)
-        cost_matrix_np = cost_matrix.detach().cpu().numpy()
+        cost_matrix_np = cost_matrix.detach().float().cpu().numpy()
 
         aligned_preds_per_batch = []
 

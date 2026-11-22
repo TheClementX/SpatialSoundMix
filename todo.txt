@@ -1,16 +1,13 @@
 Todo: 
-	-> fix pit loss : done
-	-> fix scaling : done
-	-> fix dataloader scaling : done
-	-> remove silent window : done 
-	-> add direct path and full reverb to targets : 
-	-> regenerate data : 
-	-> match validation sample rates : done
-	-> retrain : 
-
-	-> build sms-wsj dataset : 
-	-> build sms-wsj dataloaders : 
-	-> retrain spatial net on sms-wsj :
+	-> clean ears data : done
+	-> regenerate on desktop with clean ears data : done
+	-> 2 speaker run on desktop with full data : 
+	-> clean up code : done 
+	
+	-> setup wsj data : 
+	-> 2 speaker run on wsj : 
+	-> pull in TF-GridNet : 
+	-> verification runs on TF-GridNet : 
 	
 API-keys
 	token-secret : e0d4dbfcc297bad4de7611be699d8a5b
