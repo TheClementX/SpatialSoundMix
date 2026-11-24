@@ -45,14 +45,14 @@ config = {
     'batch_size_train': 4, 
     'batch_size_val': 2, 
     'batch_size_inf': 1,
-    'epochs': 40, 
+    'epochs': 50, 
     'warmup_epochs': None, 
     'grad_acum': True, 
     'grad_acum_steps': 1, 
     'mixed_precision': True, 
     'batch_scheduler': True, 
     'checkpointing': True, 
-    'full_val_steps': 10, 
+    'full_val_steps': 5, 
 
     #lr scheduler
     'pct_start': 0.05, 
@@ -80,7 +80,7 @@ config = {
     'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/best_val_loss_train_state.pth", 
     
     #set testing mode for only running inference
-    'test': True, 
+    'test': False, 
     'test_write_path': "/home/clem3nti/projects/SpatialSoundMix/test_audio", 
     'test_model_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth",
 }

@@ -340,6 +340,57 @@ if [[ $USE_MPI == 0 ]] && ! "$PY" -c 'from mpi4py import MPI' >/dev/null 2>&1; t
   "$PY" -m pip uninstall -y -q mpi4py >/dev/null 2>&1 || true
 fi
 
+# NumPy >= 1.24 compatibility patches for the INSTALLED sms_wsj package.
+# Idempotent, so it also fixes venvs created by earlier versions of this script.
+#  - np.object alias was removed.
+#  - np.array([...]) on the two speakers' utterances (different lengths) used to
+#    give an object array; it now raises "inhomogeneous shape". Build the
+#    object array explicitly (downstream code only iterates over it).
+"$PY" -I - <<'PYEOF' 2>&1 | tee -a "$LOGS/python_env.log"
+import importlib.util, pathlib, re
+
+def ragged(expr):
+    return f"__import__('sms_wsj.database.write_files').database.write_files._sms_ragged({expr})"
+
+HELPER = '''
+
+def _sms_ragged(items):
+    """np.array(items), but an object array if the items have different shapes."""
+    items = list(items)
+    try:
+        return np.array(items)
+    except ValueError:
+        out = np.empty(len(items), dtype=object)
+        for i, x in enumerate(items):
+            out[i] = x
+        return out
+'''
+
+spec = importlib.util.find_spec("sms_wsj")
+root = pathlib.Path(spec.submodule_search_locations[0]) / "database"
+
+wf = root / "write_files.py"
+s = wf.read_text()
+orig = s
+s = re.sub(r"\bnp\.object\b", "object", s)
+if "_sms_ragged" not in s:
+    s = s.replace("\n\ndef audio_read(", HELPER + "\n\ndef audio_read(", 1)
+    s = s.replace("example['audio_data'][audio_key] = np.array(audio_data)",
+                  "example['audio_data'][audio_key] = _sms_ragged(audio_data)")
+assert "_sms_ragged(audio_data)" in s, "could not patch sms_wsj write_files.py"
+if s != orig:
+    wf.write_text(s)
+    print(f"patched {wf}")
+
+db = root / "database.py"
+s = db.read_text()
+old = "return np.array([cls._rec_audio_read(f) for f in file])"
+if old in s:
+    db.write_text(s.replace(old, "return " + ragged("[cls._rec_audio_read(f) for f in file]")))
+    print(f"patched {db}")
+PYEOF
+[[ ${PIPESTATUS[0]} == 0 ]] || die "Patching sms_wsj for NumPy compatibility failed (see $LOGS/python_env.log)."
+
 # Make sure all the modules import before spending hours on anything.
 "$PY" -W ignore -c 'import sms_wsj, sacred, lazy_dataset, dlp_mpi, soundfile, scipy.signal, sh' \
   || die "Python environment is broken; delete $VENV and $MARKS/python_env.done and re-run."

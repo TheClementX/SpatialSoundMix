@@ -19,7 +19,7 @@ config = {
     "device": "cuda" if torch.cuda.is_available() else "cpu", 
     #model 
     'num_speakers': 2,  
-    'num_mics': 2, 
+    'num_mics': 6, 
     'dim_squeeze': 8, 
     'num_layers': 8, 
     'num_freqs': 129, 
@@ -27,17 +27,15 @@ config = {
         "n_fft": 256,
         "hop_length":  256 // 2,
         "win_length": 256,
-        "in_channels": 2, #mixes are binaural
+        "in_channels": 6, #mixes are binaural
         "out_channels": 1, #separations are monaural
         "window": "hann"
     }, 
 
     #datasets
-    "wsj_root": "/home/clem3nti/projects/SpatialSoundMix/r_data/train", 
-    "clip_length": 4, 
-    "random_slices": True, 
-    "sample_rate": 44100, 
-    'd_sample_rate': 16000, 
+    "wsj_root": "/home/clem3nti/projects/SpatialSoundMix/data/sms_wsj", 
+    "audio_time_len": 4.0, 
+    "target": "image", 
 
     #training
     'lr': 5e-4, 
@@ -99,9 +97,27 @@ def train(config):
 
     print("training functions initialized")
 
-    train_dataset = SmsWsjDataset()
-    val_dataset = SmsWsjDataset()
-    inf_dataset = SmsWsjDataset()
+    train_dataset = SmsWsjDataset(
+        config['wsj_root'], 
+        config['target'], 
+        "train_si284", 
+        audio_time_len=config['audio_time_len'], 
+        num_spk=config['num_speakers']
+    )
+    val_dataset = SmsWsjDataset(
+        config['wsj_root'], 
+        config['target'], 
+        "cd_dev93", 
+        audio_time_len=config['audio_time_len'], 
+        num_spk=config['num_speakers']
+    )
+    inf_dataset = SmsWsjDataset(
+        config['wsj_root'], 
+        config['target'], 
+        "test_eval98", 
+        audio_time_len=None, 
+        num_spk=config['num_speakers']
+    )
 
     print("datasets loaded")
 
