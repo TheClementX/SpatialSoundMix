@@ -67,11 +67,11 @@ config = {
 
     #inference
     "inf_chunksize": 64000, 
-    "inf_hopsize": 32000, 
+    "inf_hopsize": 64000 // 4, 
 
     #wandb
     'wandb_key': "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", 
-    'use_wandb': True, 
+    'use_wandb': False, 
     'run_name': "ablation:sa_sdr_full_run_spatial_net",
 
     #saving
@@ -80,7 +80,7 @@ config = {
     'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/best_val_loss_train_state.pth", 
     
     #set testing mode for only running inference
-    'test': False, 
+    'test': True, 
     'test_write_path': "/home/clem3nti/projects/SpatialSoundMix/test_audio", 
     'test_model_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth",
 }
@@ -188,6 +188,7 @@ def train(config):
     if config['test']: 
         print("running test separations")
         trainer.load_train_state(config['test_model_path'])
+        trainer.validate_epoch()
         trainer.validate_full_separations(
             write_separations=True, 
             separations_write_path=config["test_write_path"]

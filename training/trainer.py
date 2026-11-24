@@ -200,6 +200,7 @@ class SpeechSeparationTrainer:
             if i > 0: 
                 #get prefix and suffix for similarity scores
                 #normalize over last dim = audio dim
+                #(batch, num_speakers, t)
                 suffix_window = fn.normalize(out_buffer[:, :, start_idx:start_idx+overlap_size], p=2, dim=2)
                 prefix_window = fn.normalize(pred_audio[:, :, :overlap_size], p=2, dim=2)
 
@@ -215,6 +216,79 @@ class SpeechSeparationTrainer:
 
                 #create permutation
                 pred_audio = hungarian_aligned_audio
+
+            #overlap add
+            out_buffer[:, :, start_idx:end_idx] += pred_audio * window
+            norm_buffer[:, :, start_idx:end_idx] += window.squeeze(0)
+
+        norm_buffer = torch.where(
+            norm_buffer > 1e-8, 
+            norm_buffer, 
+            torch.ones_like(norm_buffer)
+        )
+
+        output = out_buffer / norm_buffer
+        #final output has padding stripped. 
+        return output[..., :original_seq_len]
+    """
+    @param: 
+        mix_audio: (B, chan, samples)
+    @return
+        speakers: (B, num_speakers, samples)
+    """
+    def multi_speaker_overlap_add_average_mse(
+        self, 
+        mix_audio: torch.Tensor, 
+        num_speakers: int, 
+        chunk_size: int = 441000, 
+        hop_size: int = 220500 
+    ) -> torch.Tensor:
+        B, channels, original_seq_len = mix_audio.shape
+        pad_len = chunk_size - (original_seq_len % hop_size)
+
+        if pad_len > 0: 
+            mix_audio = fn.pad(mix_audio, (0, pad_len))
+        seq_len = mix_audio.shape[-1]
+
+        overlap_size = chunk_size - hop_size
+        #(B, chan, num_chunks, chunk_size)
+        audio_chunks = mix_audio.unfold(dimension=-1, size=chunk_size, step=hop_size)
+        #(num_chunks, B, chan, chunk_size)
+        audio_chunks = audio_chunks.permute(2, 0, 1, 3)
+
+        window = torch.hann_window(chunk_size, device=mix_audio.device).view(1, 1, -1)
+        out_buffer = torch.zeros((B, num_speakers, seq_len), device=mix_audio.device)
+        norm_buffer = torch.zeros((B, 1, seq_len), device=mix_audio.device)
+
+        for i, chunk in enumerate(audio_chunks): 
+            #predict spectrograms must reshape for input to SpatialNet
+            istft_length = chunk.shape[-1]
+            model_in, scale = self.audio_to_spatial_net_in(chunk)
+            pred_spectrograms = self.model(model_in)
+            pred_audio = self.spatial_net_out_to_audio(pred_spectrograms, istft_length, scale)
+
+            #match audio with hungarian if not the first iteration
+            start_idx = i * hop_size
+            end_idx = start_idx + chunk_size
+            if i > 0: 
+                #get prefix and suffix for similarity scores
+                #(batch, num_speakers, t)
+                suffix_window = prev_pred[:, :, hop_size:]
+                prefix_window = pred_audio[:, :, :overlap_size]
+
+                #calculate inverted similarity scores
+                #(B, num_speakers, 1, t) - (B, 1, num_speakers, t)
+                sim_scores = ((suffix_window.unsqueeze(2) - prefix_window.unsqueeze(1)) ** 2).sum(-1)
+
+                sim_scores = sim_scores.detach().float().cpu().numpy()
+                hungarian_aligned_audio = torch.empty_like(pred_audio)
+                for b in range(B): 
+                    row_ind, col_ind = linear_sum_assignment(sim_scores[b])
+                    hungarian_aligned_audio[b] = pred_audio[b, col_ind, :]
+
+                #create permutation
+                pred_audio = hungarian_aligned_audio
+            prev_pred = pred_audio
 
             #overlap add
             out_buffer[:, :, start_idx:end_idx] += pred_audio * window
@@ -423,7 +497,7 @@ class SpeechSeparationTrainer:
             with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):
                 with torch.inference_mode(): 
                     #(B, num_speakers, len)
-                    prediction = self.multi_speaker_overlap_add_average(
+                    prediction = self.multi_speaker_overlap_add_average_mse(
                         mix, self.num_speakers, 
                         chunk_size=self.inf_chunk_size, 
                         hop_size=self.inf_hop_size

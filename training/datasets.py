@@ -73,6 +73,9 @@ class SpatialSoundMixStaticDataset(Dataset):
     def __len__(self) -> int: 
         return len(self.instance_paths)
 
+    def get_activity(self, sig: np.ndarray, sr: float): 
+        pass
+
     """
     @return 
         mix_audio_slice: (B, chan, samples) chan = 2 for Spatial Soundmix
@@ -91,13 +94,15 @@ class SpatialSoundMixStaticDataset(Dataset):
 
         #select random start
         start_idx = 0
+        audio_len = mix_audio.shape[1]
+        max_len = audio_len - self.slice_length
         if self.random_slices: 
-            audio_len = mix_audio.shape[1]
             if audio_len < self.slice_length: 
                 raise ValueError("audio example to short and underflowed window length")
 
-            max_len = audio_len - self.slice_length
-            start_idx = random.randint(0, max_len)
+            #make sure overlap contains 2 speakers
+        else: 
+            start_idx = max_len // 2
 
         end_idx = start_idx + self.slice_length
         mix_audio_slice = mix_audio[:, start_idx:end_idx]
