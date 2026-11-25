@@ -645,6 +645,8 @@ def generate_and_save_rir(
     assert filter_length is not None
     rir = np.zeros((number_of_sources, number_of_sensors, filter_length), dtype=np.float64)
     for k in range(number_of_sources):
+        direct_only = sound_decay_time == 0
+        n = min(filter_length, 2048) if direct_only else filter_length
         temp = rir_generator.generate(
             c=sound_velocity,
             fs=sample_rate,
@@ -652,10 +654,11 @@ def generate_and_save_rir(
             s=np.ascontiguousarray(source_positions[:, k]),
             L=np.ascontiguousarray(room_dimensions[:, 0]),
             reverberation_time=sound_decay_time,
-            nsample=filter_length,
+            nsample=n,
             mtype=rir_generator.mtype.omnidirectional,
+            order=0 if direct_only else -1
         )
-        rir[k, :, :] = np.asarray(temp.T)
+        rir[k, :, :n] = np.asarray(temp.T)
 
     assert rir.shape[0] == number_of_sources
     assert rir.shape[1] == number_of_sensors

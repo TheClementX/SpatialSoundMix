@@ -17,6 +17,7 @@ import os
 import soundfile as sf
 from typing import * 
 import wandb
+import math
 
 class AverageMeter:
     def __init__(self):
@@ -34,7 +35,7 @@ class AverageMeter:
         self.count += n
         self.avg = self.sum / max(self.count, 1)
 
-class SpeechSeparationTrainer: 
+class WsjSpeechSeparationTrainer: 
     def __init__(
         self, 
         model: nn.Module, 
@@ -51,6 +52,7 @@ class SpeechSeparationTrainer:
         inf_hop_size: int, 
         grad_acum_steps: int,
         wandb_key: str, 
+        loss_log_step: int = 10, 
         sample_rate: int = 44100, 
         mixed_precision: bool = True, 
         use_wandb: bool = True, 
@@ -83,6 +85,7 @@ class SpeechSeparationTrainer:
         self.loss_fn = loss_fn
         self.scheduler = lr_scheduler
         self.batch_scheduler = batch_scheduler
+        self.loss_log_step = loss_log_step
 
         #sa_sdr
         self.hungarian_SA_SDR = hungarian_SA_SDR()
@@ -92,9 +95,9 @@ class SpeechSeparationTrainer:
         self.val_loader = val_loader #load clips for validation
         self.inf_loader = inf_loader #load full tracks for inference
 
-        print(f"train loader shape/s : {[t.shape for t in next(iter(self.train_loader))]}")
-        print(f"val loader shape/s : {[t.shape for t in next(iter(self.val_loader))]}")
-        print(f"inf loader shape/s : {[t.shape for t in next(iter(self.inf_loader))]}")
+        print(f"train loader shape/s : {[t.shape for t in next(iter(self.train_loader))[:2]]}")
+        print(f"val loader shape/s : {[t.shape for t in next(iter(self.val_loader))[:2]]}")
+        print(f"inf loader shape/s : {[t.shape for t in next(iter(self.inf_loader))[:2]]}")
 
         self.inf_chunk_size = inf_chunk_size
         self.inf_hop_size = inf_hop_size
@@ -109,6 +112,7 @@ class SpeechSeparationTrainer:
         
         self.wandb_key = wandb_key
         self.use_wandb = use_wandb
+        self.global_step = 0
         self.device = device
 
     """
@@ -308,6 +312,7 @@ class SpeechSeparationTrainer:
         self.model.train()
         self.optimizer.zero_grad()
         loss_meter = AverageMeter()
+        window_loss_meter = AverageMeter()
         batch_loss = 0
 
         progress = tqdm(
@@ -322,8 +327,8 @@ class SpeechSeparationTrainer:
         peak_mem = 0
         total_norm=None
         for i, example in progress: 
-            mix, targets = example
-            mix, targets = mix.to(self.device), targets.to(self.device)
+            mix, targets, _ = example
+            mix, targets = mix.to(self.device), targets[:, :, 0].to(self.device)
             istft_length = mix.shape[-1]
 
             model_in, scale = self.audio_to_spatial_net_in(mix)
@@ -351,6 +356,7 @@ class SpeechSeparationTrainer:
                 not self.grad_acum
             ): 
                 loss_meter.update(batch_loss)
+                window_loss_meter.update(batch_loss)
                 #gradient clipping
                 self.scaler.unscale_(self.optimizer)
                 total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
@@ -362,6 +368,15 @@ class SpeechSeparationTrainer:
 
                 if self.batch_scheduler: self.scheduler.step()
                 batch_loss = 0
+
+                self.global_step += 1
+                if self.use_wandb and self.global_step % self.loss_log_step == 0: 
+                    wandb.log({
+                        "global_step": self.global_step, 
+                        "step/train_avg_window_loss": window_loss_meter.avg, 
+                        "step/total_norm": total_norm if total_norm is not None else None
+                    })
+                    window_loss_meter.reset()
 
             #track memory usage
             if self.device == "cuda":
@@ -381,10 +396,10 @@ class SpeechSeparationTrainer:
         if not self.batch_scheduler: self.scheduler.step()
 
         metrics = {
-            "train_avg_loss": loss_meter.avg, 
-            "train_peak_mem": peak_mem, 
-            "lr": self.optimizer.param_groups[0]['lr'], 
-            "total_norm": total_norm
+            "epoch/train_avg_loss": loss_meter.avg, 
+            "epoch/train_peak_mem": peak_mem, 
+            "epoch/lr": self.optimizer.param_groups[0]['lr'], 
+            "epoch/total_norm": total_norm.item if total_norm is not None else None, 
         }
 
         return metrics
@@ -408,8 +423,8 @@ class SpeechSeparationTrainer:
         current_mem = 0
         peak_mem = 0
         for example in progress: 
-            mix, targets = example
-            mix, targets = mix.to(self.device), targets.to(self.device)
+            mix, targets, _ = example
+            mix, targets = mix.to(self.device), targets[:, :, 0].to(self.device)
             istft_length = mix.shape[-1]
 
             model_in, scale = self.audio_to_spatial_net_in(mix)
@@ -442,9 +457,9 @@ class SpeechSeparationTrainer:
 
         metrics = {
             # "val_avg_loss": loss_meter.avg, 
-            "val_peak_mem": peak_mem, 
-            "avg_val_hsa_sdr": hsa_sdr_meter.avg, 
-            "avg_val_fsa_sdr": -fsa_sdr_meter.avg, 
+            "epoch/val_peak_mem": peak_mem, 
+            "epoch/avg_val_hsa_sdr": hsa_sdr_meter.avg, 
+            "epoch/avg_val_fsa_sdr": -fsa_sdr_meter.avg, 
         }
 
         return metrics
@@ -490,8 +505,9 @@ class SpeechSeparationTrainer:
         peak_mem = 0
         for i, example in enumerate(progress): 
             #full recording pairs
-            mix, targets = example
-            mix, targets = mix.to(self.device), targets.to(self.device)
+            mix, targets, _ = example
+            #take 0th channel for targets
+            mix, targets = mix.to(self.device), targets[:, :, 0].to(self.device)
 
             #mixed precision calculate loss
             with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16):
@@ -534,8 +550,8 @@ class SpeechSeparationTrainer:
 
 
         metrics = {
-            "avg_hsa_sdr": hsa_sdr_meter.avg, 
-            "avg_fsa_sdr": -fsa_sdr_meter.avg,
+            "epoch/avg_hsa_sdr": hsa_sdr_meter.avg, 
+            "epoch/avg_fsa_sdr": -fsa_sdr_meter.avg,
         }
 
         return metrics
@@ -596,11 +612,19 @@ class SpeechSeparationTrainer:
             )
             wandb.watch(self.model, log="gradients", log_freq=20)
 
+            #define custom stepping metrics
+            wandb.define_metric("global_step")
+            wandb.define_metric("step/*", step_metric="global_step")
+            wandb.define_metric("epoch")
+            wandb.define_metric("epoch/*", step_metric="epoch")
+
         if resume: 
             epoch, _ = self.load_train_state(model_load_path)
             epoch += 1
+            self.global_step = epoch * math.ceil(len(self.train_loader) / self.grad_acum_steps)
         else: 
             epoch = 0
+            self.global_step = 0
 
         #main training loop
         best_sdr, best_val_loss = None, None
@@ -618,24 +642,24 @@ class SpeechSeparationTrainer:
                 metrics_and_data.update(separation_metrics)
 
                 #higher is better
-                if best_sdr is None or metrics_and_data['avg_hsa_sdr'] > best_sdr: 
+                if best_sdr is None or metrics_and_data['epoch/avg_hsa_sdr'] > best_sdr: 
                     self.save_model_state('best_sdr_model.pth', model_save_path) 
                     self.save_train_state(
                         model_save_path, 
                         'best_sdr_train_state.pth',
                         metrics_and_data, i
                     )
-                    best_sdr = metrics_and_data['avg_hsa_sdr']
+                    best_sdr = metrics_and_data['epoch/avg_hsa_sdr']
 
             # higher is better
-            if best_val_loss is None or metrics_and_data['avg_val_fsa_sdr'] > best_val_loss: 
+            if best_val_loss is None or metrics_and_data['epoch/avg_val_fsa_sdr'] > best_val_loss: 
                 self.save_model_state('best_val_loss_model.pth', model_save_path) 
                 self.save_train_state(
                     model_save_path, 
                     'best_val_loss_train_state.pth',
                     metrics_and_data, i
                 )
-                best_val_loss = metrics_and_data['avg_val_fsa_sdr']
+                best_val_loss = metrics_and_data['epoch/avg_val_fsa_sdr']
 
             #save checkpoint
             self.save_train_state(
@@ -646,6 +670,7 @@ class SpeechSeparationTrainer:
             print(metrics_and_data)
 
             #wandb logging
+            metrics_and_data['epoch'] = i 
             if self.use_wandb: run.log(metrics_and_data)
 
         if self.use_wandb: run.finish()

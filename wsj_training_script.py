@@ -2,8 +2,8 @@
 from models.losses import MAELoss, factorial_SA_SDR
 from models.spatialnet.SpatialNet import * 
 from training.datasets import *
-from training.trainer import SpeechSeparationTrainer
-from sms_wsj_dataset import * 
+from training.wsj_trainer import WsjSpeechSeparationTrainer
+from training.sms_wsj_dataset import * 
 
 #pytorch imports
 import torch
@@ -20,9 +20,12 @@ config = {
     #model 
     'num_speakers': 2,  
     'num_mics': 6, 
-    'dim_squeeze': 8, 
-    'num_layers': 8, 
+    'dim_squeeze': 16, 
+    'num_layers': 12, 
     'num_freqs': 129, 
+    'num_heads': 4, 
+
+    #stft
     "stft_parameters": {
         "n_fft": 256,
         "hop_length":  256 // 2,
@@ -35,7 +38,9 @@ config = {
     #datasets
     "wsj_root": "/home/clem3nti/projects/SpatialSoundMix/data/sms_wsj", 
     "audio_time_len": 4.0, 
-    "target": "image", 
+    "target": "direct_path", 
+    "sample_rate": 44100, 
+    "d_sample_rate": 8000,
 
     #training
     'lr': 5e-4, 
@@ -57,7 +62,7 @@ config = {
     'final_div_factor': 1e3, 
 
     #dataloaders
-    'num_workers': 8, 
+    'num_workers': 10, 
     'pin_memory': True,
     'persistent_workers': False, 
     'prefetch_factor': 4,
@@ -68,16 +73,16 @@ config = {
 
     #wandb
     'wandb_key': "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", 
-    'use_wandb': False, 
-    'run_name': "ablation:sa_sdr_full_run_spatial_net",
+    'use_wandb': True, 
+    'run_name': "ablation:sms_wsj_run_spatial_net",
 
     #saving
     'model_save_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints", 
-    'resume': False, 
-    'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/best_val_loss_train_state.pth", 
+    'resume': True, 
+    'model_load_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth", 
     
     #set testing mode for only running inference
-    'test': True, 
+    'test': False, 
     'test_write_path': "/home/clem3nti/projects/SpatialSoundMix/test_audio", 
     'test_model_path': "/home/clem3nti/projects/SpatialSoundMix/checkpoints/train_state.pth",
 }
@@ -90,7 +95,8 @@ def train(config):
         config['dim_squeeze'], 
         config['num_layers'], 
         config['num_freqs'], 
-        checkpointing = config['checkpointing']
+        num_heads=config['num_heads'], 
+        checkpointing = config['checkpointing'], 
     ).to(config['device'])
     print("model initialized")
 
@@ -107,14 +113,14 @@ def train(config):
     val_dataset = SmsWsjDataset(
         config['wsj_root'], 
         config['target'], 
-        "cd_dev93", 
+        "cv_dev93", 
         audio_time_len=config['audio_time_len'], 
         num_spk=config['num_speakers']
     )
     inf_dataset = SmsWsjDataset(
         config['wsj_root'], 
         config['target'], 
-        "test_eval98", 
+        "test_eval92", 
         audio_time_len=None, 
         num_spk=config['num_speakers']
     )
@@ -167,7 +173,7 @@ def train(config):
     )
 
 
-    trainer = SpeechSeparationTrainer(
+    trainer = WsjSpeechSeparationTrainer(
         model, config['num_speakers'], 
         config['stft_parameters'], optimizer, loss, 
         lr_scheduler, config['batch_scheduler'],
