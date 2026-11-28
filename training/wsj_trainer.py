@@ -573,7 +573,7 @@ class WsjSpeechSeparationTrainer:
     def load_train_state(
         self, path: str, 
     ) -> tuple: 
-        state = torch.load(path)
+        state = torch.load(path, weights_only=False)
         self.model.load_state_dict(state["model_state_dict"])
         self.optimizer.load_state_dict(state["optimizer_state_dict"])
         self.scheduler.load_state_dict(state["scheduler_state_dict"])

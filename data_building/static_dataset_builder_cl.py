@@ -43,6 +43,7 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 import json
 import multiprocessing as mp
 import random
+import resource
 import shutil
 import sys
 import tempfile
@@ -134,6 +135,8 @@ class SpatialSoundMixDatasetBuilder:
     MIN_SOURCE_DISTANCE = 0.5
     #attempts at a valid placement / audible configuration before a scene is skipped
     MAX_PLACEMENT_TRIES = 20
+    #new seeds tried for an instance whose MAX_PLACEMENT_TRIES all fail
+    INSTANCE_RESEEDS = 5
     #placements whose weakest RIR is further below the strongest (dB) are resampled:
     #those speakers are sealed off from the listener or placed outside the mesh
     MAX_RIR_RANGE_DB = 30.0
@@ -690,27 +693,67 @@ class SpatialSoundMixDatasetBuilder:
         max_distance: float,
         seed: int
     ) -> None:
-        """Generate and write num_states placements of num_sources speakers in a scene."""
+        """Generate and write num_states placements of num_sources speakers in a scene.
+
+        Instances already on disk are kept, so a scene process that dies partway is
+        resumed by the next one. Each instance is seeded from (seed, k, attempt), so it
+        comes out the same whether or not the scene was resumed. An instance that finds
+        no audible configuration is retried with a new seed INSTANCE_RESEEDS times.
+        """
         mesh_path = self.find_mesh(mesh_dir)
         sim, island = self.initialize_sim_scene(num_sources, mesh_path, seed)
         os.makedirs(write_dir, exist_ok=True)
 
-        for k in tqdm(range(num_states), desc="Instances", leave=False):
-            instance = self.generate_instance(sim, island, num_sources, max_distance, return_sources)
-            self.write_instance(os.path.join(write_dir, f"instance_{k}"), instance)
-        sim.close()
+        try:
+            for k in tqdm(range(num_states), desc="Instances", leave=False):
+                instance_dir = os.path.join(write_dir, f"instance_{k}")
+                if self.instance_is_complete(instance_dir):
+                    continue
+                for attempt in range(self.INSTANCE_RESEEDS):
+                    instance_seed = (seed * 1_000_003 + k * 97 + attempt) % (2 ** 31)
+                    random.seed(instance_seed)
+                    sim.pathfinder.seed(instance_seed)
+                    try:
+                        instance = self.generate_instance(
+                            sim, island, num_sources, max_distance, return_sources
+                        )
+                        break
+                    except RuntimeError as e:
+                        print(f"instance_{k}, attempt {attempt}: {e}", file=sys.stderr, flush=True)
+                else:
+                    raise RuntimeError(
+                        f"instance_{k}: no audible configuration after "
+                        f"{self.INSTANCE_RESEEDS} reseeds"
+                    )
+                self.write_instance(instance_dir, instance)
+                #peak memory of this process, to spot a leak in the simulator
+                peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+                tqdm.write(f"instance_{k} written, peak RSS {peak_mb:.0f} MB")
+        finally:
+            sim.close()
 
     # ----------------------------------------------------------------------------------
     # build
     # ----------------------------------------------------------------------------------
 
     @staticmethod
-    def scene_is_complete(write_dir: str, num_states: int) -> bool:
-        """True when every instance of a scene has been written."""
+    def instance_is_complete(instance_dir: str) -> bool:
         return all(
-            os.path.isfile(os.path.join(write_dir, f"instance_{k}", name))
-            for k in range(num_states) for name in ("mix_audio.wav", "counts.npy")
+            os.path.isfile(os.path.join(instance_dir, name))
+            for name in ("mix_audio.wav", "counts.npy")
         )
+
+    @classmethod
+    def num_complete_instances(cls, write_dir: str, num_states: int) -> int:
+        return sum(
+            cls.instance_is_complete(os.path.join(write_dir, f"instance_{k}"))
+            for k in range(num_states)
+        )
+
+    @classmethod
+    def scene_is_complete(cls, write_dir: str, num_states: int) -> bool:
+        """True when every instance of a scene has been written."""
+        return cls.num_complete_instances(write_dir, num_states) == num_states
 
     def check_build_config(self, data_write_path: str, return_sources: bool, max_distance: float) -> None:
         """Refuse to resume a build made with other settings: finished scenes are skipped,
@@ -752,9 +795,10 @@ class SpatialSoundMixDatasetBuilder:
         simulator for its scene only, so memory and threads cannot pile up across scenes
         and a crash inside habitat-sim ends only this scene."""
         #seeded per scene, so a scene comes out the same whatever ran before it
+        #(each instance is reseeded again in generate_scene)
         random.seed(self.seed + scene_idx)
-        #start clean: drops partial output of an interrupted earlier run
-        shutil.rmtree(write_dir, ignore_errors=True)
+        #instances already written are kept and resumed; half-written ones only ever
+        #exist as hidden .tmp folders, which write_instance clears
         try:
             self.generate_scene(
                 mesh_dir, num_sources, num_states, write_dir, return_sources, max_distance,
@@ -799,32 +843,49 @@ class SpatialSoundMixDatasetBuilder:
                 continue
             num_sources = random.Random(self.seed + i).randint(lo, hi)
 
-            proc = ctx.Process(
-                target=self._scene_process,
-                args=(i, mesh_dir, num_sources, num_states_per_scene, write_dir,
-                      return_sources, max_distance)
-            )
-            proc.start()
-            try:
-                proc.join(self.instance_timeout * num_states_per_scene)
-                timed_out = proc.is_alive()
-            finally:
-                if proc.is_alive():
-                    proc.kill()
-                proc.join()
+            #a scene process that dies (crash, out of memory, a failed instance) after
+            #writing some instances is started again and resumes where it stopped; the
+            #scene is skipped only when a process makes no progress at all
+            restarts = 0
+            while True:
+                done_before = self.num_complete_instances(write_dir, num_states_per_scene)
+                proc = ctx.Process(
+                    target=self._scene_process,
+                    args=(i, mesh_dir, num_sources, num_states_per_scene, write_dir,
+                          return_sources, max_distance)
+                )
+                proc.start()
+                try:
+                    proc.join(self.instance_timeout * (num_states_per_scene - done_before))
+                    timed_out = proc.is_alive()
+                finally:
+                    if proc.is_alive():
+                        proc.kill()
+                    proc.join()
 
-            #success is judged by what is on disk, so a crash while the scene
-            #process tears habitat-sim down does not discard finished work
-            if self.scene_is_complete(write_dir, num_states_per_scene):
+                if proc.exitcode == _FATAL_EXIT_CODE:
+                    shutil.rmtree(write_dir, ignore_errors=True)
+                    raise AudioSourcePositionError(
+                        "stopping: habitat-sim does not place audio sources correctly (see above)"
+                    )
+                #success is judged by what is on disk, so a crash while the scene
+                #process tears habitat-sim down does not discard finished work
+                done_after = self.num_complete_instances(write_dir, num_states_per_scene)
+                if done_after == num_states_per_scene or done_after == done_before:
+                    break
+                restarts += 1
+                tqdm.write(
+                    f"scene_{i}: process ended with exit code {proc.exitcode} after "
+                    f"{done_after}/{num_states_per_scene} instances, restarting ({restarts})"
+                )
+
+            if done_after == num_states_per_scene:
                 self.source_positions_verified = True
                 continue
 
             shutil.rmtree(write_dir, ignore_errors=True)
-            if proc.exitcode == _FATAL_EXIT_CODE:
-                raise AudioSourcePositionError(
-                    "stopping: habitat-sim does not place audio sources correctly (see above)"
-                )
-            skipped[i] = "timed out" if timed_out else f"exit code {proc.exitcode}"
+            reason = "timed out" if timed_out else f"exit code {proc.exitcode}"
+            skipped[i] = f"{reason} at {done_after}/{num_states_per_scene} instances"
             prog_bar.set_postfix(skipped=len(skipped))
 
         if skipped:

@@ -34,7 +34,7 @@ SIMULATION VARIABLES =============================================
 """
 DATA ATTRIBUTE VARIABLES ============================================= 
 """
-NUM_STATES_PER_SCENE = 30 #number of instances generated
+NUM_STATES_PER_SCENE = 120 #number of instances generated
 NUM_SOURCES_RANGE = (2, 2) #number of sources in mix
 MAX_DISTANCE = 5.0 #max speaker distance
 MAX_LEVEL_DIFF_DB = 4.0 # db difference between loudest speaker and everyother speaker
@@ -63,6 +63,7 @@ DATA ATTRIBUTE VARIABLES =============================================
 """
 
 def main():
+    os.makedirs(DATA_WRITE_PATH, exist_ok=True)
     builder = SpatialSoundMixDatasetBuilder(
         DATA_DIRS, MESH_DIRS, AUDIO_ABSORPTION_FILE, DATASET_CONFIG_FILE,
         sample_rate=SAMPLE_RATE,
